@@ -280,6 +280,8 @@ u32 spl_mmc_boot_mode(struct mmc *mmc, const u32 boot_device)
 			return MMCSD_MODE_FS;
 		return MMCSD_MODE_EMMCBOOT;
 	case BOOT_DEVICE_MMC:
+		if (IS_ENABLED(CONFIG_MMCSD_MODE_FORCE_RAW))
+			return MMCSD_MODE_RAW;
 		if (bootmode_cfg & MAIN_DEVSTAT_PRIMARY_MMC_FS_RAW_MASK)
 			return MMCSD_MODE_RAW;
 	default:

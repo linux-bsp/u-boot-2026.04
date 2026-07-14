@@ -5,6 +5,14 @@
 
 if SOC_K3_AM625
 
+config MMCSD_MODE_FORCE_RAW
+	bool "Force MMC/SD raw boot mode"
+	depends on SPL_SYS_MMCSD_RAW_MODE
+	help
+	  Force the SPL MMC loader to use raw mode for MMC/SD boot,
+	  regardless of the ROM boot-mode FS/RAW setting. The raw sector
+	  location is configured by SYS_MMCSD_RAW_MODE_U_BOOT_SECTOR.
+
 choice
 	prompt "K3 AM62x based boards"
 	optional
