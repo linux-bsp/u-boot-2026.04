@@ -127,10 +127,10 @@ invalid_eeprom:
 #if CONFIG_IS_ENABLED(BOARD_LATE_INIT)
 int board_late_init(void)
 {
-	if (IS_ENABLED(CONFIG_TI_I2C_BOARD_DETECT)) {
-		setup_board_eeprom_env();
-		setup_serial_am6();
-	}
+#if CONFIG_IS_ENABLED(TI_I2C_BOARD_DETECT)
+    setup_board_eeprom_env();
+    setup_serial_am6();
+#endif
 
 	ti_set_fdt_env(NULL, NULL);
 	return 0;
