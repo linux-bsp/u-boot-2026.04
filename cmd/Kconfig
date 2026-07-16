@@ -190,6 +190,17 @@ config CMD_FWU_METADATA
 	help
 	  Command to read the metadata and dump it's contents
 
+config CMD_FU
+	bool "fu - RAW A/B firmware upgrade"
+	depends on FIT && OF_CONTROL
+	depends on BLK || DM_SPI_FLASH
+	select CRC32
+	help
+	  Provide FIT-verified component updates for fixed RAW layouts on MMC,
+	  SD, and SPI NOR. The trusted layout is read from the U-Boot control
+	  device tree. Redundant metadata tracks mixed-component deployments,
+	  pending boot attempts, confirmation, and rollback.
+
 config CMD_HELP
 	bool "help"
 	default y

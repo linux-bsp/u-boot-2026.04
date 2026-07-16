@@ -1,0 +1,54 @@
+U-Boot fixed-RAW firmware upgrade layout
+========================================
+
+The firmware upgrade command reads a trusted fixed layout from the U-Boot
+control device tree. Exactly one enabled node is allowed.
+
+Required parent properties:
+
+- compatible: must be "u-boot,firmware-upgrade"
+- storage: "mmc" for eMMC/SD, or "spi-nor"
+- device: MMC device number; required for "mmc"
+- bus and cs: SPI bus and chip select; used for "spi-nor"
+- product: value required in the FIT configuration fu,product property
+- layout-id: value required in the FIT configuration fu,layout-id property
+
+Optional parent properties:
+
+- boot-attempts: number of attempts for a pending deployment, default 3
+
+The node must have the following children:
+
+  meta0, meta1,
+  tiboot3_a, tiboot3_b, tispl_a, tispl_b, uboot_a, uboot_b,
+  kernel_a, kernel_b, rootfs_a, rootfs_b
+
+Each child has 64-bit offset and size properties in bytes. Regions must not
+overlap. MMC regions must be block aligned. SPI NOR regions must be aligned to
+the device erase size, and meta0 and meta1 must use different erase blocks.
+
+Example (addresses are illustrative and are not an AM62x production layout):
+
+	firmware-upgrade {
+		compatible = "u-boot,firmware-upgrade";
+		storage = "mmc";
+		device = <1>;
+		product = "ti-am62x";
+		layout-id = "am62x-raw-v1";
+		boot-attempts = <3>;
+
+		meta0 { offset = <0 0x04000000>; size = <0 0x00010000>; };
+		meta1 { offset = <0 0x04010000>; size = <0 0x00010000>; };
+		tiboot3_a { offset = <0 0x00000000>; size = <0 0x00100000>; };
+		tiboot3_b { offset = <0 0x04020000>; size = <0 0x00100000>; };
+		tispl_a { offset = <0 0x00100000>; size = <0 0x00200000>; };
+		tispl_b { offset = <0 0x04120000>; size = <0 0x00200000>; };
+		uboot_a { offset = <0 0x00300000>; size = <0 0x00200000>; };
+		uboot_b { offset = <0 0x04320000>; size = <0 0x00200000>; };
+		kernel_a { offset = <0 0x04520000>; size = <0 0x02000000>; };
+		kernel_b { offset = <0 0x06520000>; size = <0 0x02000000>; };
+		rootfs_a { offset = <0 0x08520000>; size = <0 0x08000000>; };
+		rootfs_b { offset = <0 0x10520000>; size = <0 0x08000000>; };
+	};
+
+The layout belongs in a board U-Boot dtsi, not in a mutable environment.
