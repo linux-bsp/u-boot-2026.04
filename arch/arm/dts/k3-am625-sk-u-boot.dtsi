@@ -6,6 +6,32 @@
 
 #include "k3-am625-sk-binman.dtsi"
 
+/ {
+	firmware-upgrade {
+		compatible = "u-boot,firmware-upgrade";
+		storage = "mmc";
+		device = <1>;
+		product = "ti-am62x";
+		layout-id = "am62x-sd-ab-v1";
+		boot-attempts = <3>;
+		default-slot = <0>;
+		auto-init;
+
+		meta0 { offset = <0 0x00500000>; size = <0 0x00010000>; };
+		meta1 { offset = <0 0x00510000>; size = <0 0x00010000>; };
+		tiboot3_a { offset = <0 0x00000000>; size = <0 0x00100000>; };
+		tiboot3_b { offset = <0 0x00700000>; size = <0 0x00100000>; };
+		tispl_a { offset = <0 0x00100000>; size = <0 0x00200000>; };
+		tispl_b { offset = <0 0x00800000>; size = <0 0x00200000>; };
+		uboot_a { offset = <0 0x00300000>; size = <0 0x00200000>; };
+		uboot_b { offset = <0 0x00a00000>; size = <0 0x00200000>; };
+		kernel_a { offset = <0 0x01000000>; size = <0 0x01800000>; };
+		kernel_b { offset = <0 0x02800000>; size = <0 0x01800000>; };
+		rootfs_a { offset = <0 0x04000000>; size = <0 0x08000000>; };
+		rootfs_b { offset = <0 0x0c000000>; size = <0 0x08000000>; };
+	};
+};
+
 &main_bcdma {
 	reg = <0x00 0x485c0100 0x00 0x100>,
 	      <0x00 0x4c000000 0x00 0x20000>,

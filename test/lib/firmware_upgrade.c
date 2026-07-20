@@ -130,3 +130,56 @@ static int lib_test_fu_metadata_redundancy(struct unit_test_state *uts)
 }
 
 LIB_TEST(lib_test_fu_metadata_redundancy, 0);
+
+static int lib_test_fu_release_transaction(struct unit_test_state *uts)
+{
+	struct fu_metadata metadata;
+	u8 deployment;
+	int ret;
+
+	fu_metadata_init(&metadata, 0);
+	metadata.deployment[0].release_version = 3;
+
+	ut_assertok(fu_metadata_begin_release(&metadata, 4, &deployment));
+	ut_asserteq(1, deployment);
+	ut_asserteq(FU_SLOT_NONE, metadata.pending_deployment);
+	ut_asserteq(FU_STATE_WRITING, metadata.deployment[deployment].state);
+
+	ret = fu_metadata_stage_component(&metadata, deployment,
+					  FU_COMPONENT_KERNEL, 1, 10, 20);
+	ut_assertok(ret);
+	ret = fu_metadata_stage_component(&metadata, deployment,
+					  FU_COMPONENT_ROOTFS, 1, 11, 21);
+	ut_assertok(ret);
+	ut_asserteq(FU_SLOT_NONE, metadata.pending_deployment);
+
+	ut_assertok(fu_metadata_commit_release(&metadata, deployment, 3));
+	ut_asserteq(deployment, metadata.pending_deployment);
+	ut_asserteq(FU_STATE_READY, metadata.deployment[deployment].state);
+	ut_asserteq(4, metadata.deployment[deployment].release_version);
+	ut_asserteq(1, metadata.deployment[deployment]
+				.component[FU_COMPONENT_KERNEL].slot);
+	ut_asserteq(1, metadata.deployment[deployment]
+				.component[FU_COMPONENT_ROOTFS].slot);
+
+	return 0;
+}
+
+LIB_TEST(lib_test_fu_release_transaction, 0);
+
+static int lib_test_fu_release_rejects_downgrade(struct unit_test_state *uts)
+{
+	struct fu_metadata metadata;
+	u8 deployment;
+
+	fu_metadata_init(&metadata, 0);
+	metadata.deployment[0].release_version = 7;
+
+	ut_asserteq(-EPERM,
+		    fu_metadata_begin_release(&metadata, 6, &deployment));
+	ut_asserteq(FU_SLOT_NONE, metadata.pending_deployment);
+
+	return 0;
+}
+
+LIB_TEST(lib_test_fu_release_rejects_downgrade, 0);

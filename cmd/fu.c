@@ -5,6 +5,8 @@
 #include <dm/ofnode.h>
 #include <env.h>
 #include <firmware_upgrade.h>
+#include <hash.h>
+#include <hexdump.h>
 #include <image.h>
 #include <mapmem.h>
 #include <malloc.h>
@@ -18,6 +20,9 @@
 
 #define FU_COMPATIBLE "u-boot,firmware-upgrade"
 #define FU_VERIFY_CHUNK (64 * 1024)
+#define FU_SHA256_SIZE 32
+#define FU_RELEASE_PATH_SIZE 128
+#define FU_RELEASE_MAX_COMPONENTS FU_COMPONENT_COUNT
 
 enum fu_storage_type {
 	FU_STORAGE_MMC,
@@ -52,6 +57,9 @@ struct fu_layout {
 	u32 bus;
 	u32 cs;
 	u8 attempts;
+	u8 default_slot;
+	bool auto_init;
+	bool allow_bootloader_update;
 	const char *product;
 	const char *layout_id;
 	struct fu_region region[FU_REGION_COUNT];
@@ -71,6 +79,20 @@ struct fu_package {
 	int conf_noffset;
 	u32 version;
 	u32 rollback_index;
+};
+
+struct fu_release_component {
+	enum fu_component component;
+	char file[FU_RELEASE_PATH_SIZE];
+	u8 sha256[FU_SHA256_SIZE];
+};
+
+struct fu_release {
+	u32 version;
+	u32 rollback_index;
+	bool allow_bootloader;
+	int count;
+	struct fu_release_component component[FU_RELEASE_MAX_COMPONENTS];
 };
 
 static const char *const fu_region_names[FU_REGION_COUNT] = {
@@ -115,6 +137,12 @@ static int fu_read_layout(struct fu_layout *layout)
 	if (!attempts || attempts > U8_MAX)
 		return -EINVAL;
 	layout->attempts = attempts;
+	layout->default_slot = ofnode_read_u32_default(node, "default-slot", 0);
+	if (layout->default_slot > 1)
+		return -EINVAL;
+	layout->auto_init = ofnode_read_bool(node, "auto-init");
+	layout->allow_bootloader_update =
+		ofnode_read_bool(node, "allow-bootloader-update");
 
 	for (i = 0; i < FU_REGION_COUNT; i++) {
 		child = ofnode_find_subnode(node, fu_region_names[i]);
@@ -143,7 +171,7 @@ static int fu_storage_open(const struct fu_layout *layout,
 	if (layout->type == FU_STORAGE_MMC) {
 		snprintf(dev, sizeof(dev), "%u", layout->device);
 		ret = blk_get_device_by_str("mmc", dev, &storage->blk);
-		if (ret)
+		if (ret < 0)
 			return ret;
 		storage->write_size = storage->blk->blksz;
 		storage->capacity = storage->blk->lba * storage->blk->blksz;
@@ -509,6 +537,119 @@ static int fu_verify_package(const struct fu_layout *layout, const void *fit,
 	return 0;
 }
 
+static int fu_component_from_name(const char *name,
+				  enum fu_component *component)
+{
+	int i;
+
+	for (i = 0; i < FU_COMPONENT_COUNT; i++) {
+		if (!strcmp(name, fu_component_name(i))) {
+			*component = i;
+			return 0;
+		}
+	}
+
+	return -EINVAL;
+}
+
+static int fu_copy_string_prop(const void *fit, int node, const char *name,
+			       char *dest, size_t dest_size)
+{
+	const char *value;
+	int len;
+
+	value = fdt_getprop(fit, node, name, &len);
+	if (!value)
+		return len;
+	if (len < 2 || value[len - 1] || strnlen(value, len) != len - 1)
+		return -EINVAL;
+	if (len > dest_size)
+		return -ENAMETOOLONG;
+	memcpy(dest, value, len);
+
+	return 0;
+}
+
+static int fu_verify_release(const struct fu_layout *layout, const void *fit,
+			     size_t size, struct fu_release *release)
+{
+	const char *type, *product, *layout_id, *name, *sha256;
+	unsigned int seen = 0;
+	char prop[48];
+	int conf, count, i, len, ret;
+
+	ret = fit_check_format(fit, size);
+	if (ret)
+		return ret;
+	if (fit_get_size(fit) > size)
+		return -EFBIG;
+
+	conf = fit_conf_get_node(fit, NULL);
+	if (conf < 0)
+		return conf;
+	ret = fit_config_verify(fit, conf);
+	if (ret)
+		return -EACCES;
+
+	type = fdt_getprop(fit, conf, "fu,type", NULL);
+	product = fdt_getprop(fit, conf, "fu,product", NULL);
+	layout_id = fdt_getprop(fit, conf, "fu,layout-id", NULL);
+	if (!type || strcmp(type, "release") || !product || !layout_id)
+		return -EINVAL;
+	if (strcmp(product, layout->product) ||
+	    strcmp(layout_id, layout->layout_id))
+		return -EPERM;
+
+	ret = fu_fit_u32(fit, conf, "fu,version", &release->version);
+	if (ret)
+		return ret;
+	ret = fu_fit_u32(fit, conf, "fu,rollback-index",
+			 &release->rollback_index);
+	if (ret)
+		return ret;
+	ret = fu_verify_prop(fit, conf, FIT_FIRMWARE_PROP);
+	if (ret)
+		return ret;
+
+	memset(release->component, 0, sizeof(release->component));
+	release->allow_bootloader =
+		!!fdt_getprop(fit, conf, "fu,allow-bootloader", NULL);
+	count = fdt_stringlist_count(fit, conf, "fu,components");
+	if (count <= 0 || count > FU_RELEASE_MAX_COMPONENTS)
+		return count < 0 ? count : -E2BIG;
+
+	for (i = 0; i < count; i++) {
+		struct fu_release_component *item = &release->component[i];
+
+		name = fdt_stringlist_get(fit, conf, "fu,components", i, &len);
+		if (!name)
+			return len;
+		ret = fu_component_from_name(name, &item->component);
+		if (ret)
+			return ret;
+		if (seen & (1U << item->component))
+			return -EEXIST;
+		seen |= 1U << item->component;
+
+		snprintf(prop, sizeof(prop), "fu,%s-file", name);
+		ret = fu_copy_string_prop(fit, conf, prop, item->file,
+					  sizeof(item->file));
+		if (ret)
+			return ret;
+		snprintf(prop, sizeof(prop), "fu,%s-sha256", name);
+		sha256 = fdt_getprop(fit, conf, prop, &len);
+		if (!sha256)
+			return len;
+		if (len != FU_SHA256_SIZE * 2 + 1 ||
+		    sha256[FU_SHA256_SIZE * 2] ||
+		    hex2bin(item->sha256, sha256, FU_SHA256_SIZE))
+			return -EINVAL;
+	}
+	release->count = count;
+
+	return 0;
+}
+
 static const struct fu_region *
 fu_component_region(const struct fu_layout *layout, enum fu_component component,
 		    u8 slot)
@@ -598,62 +739,101 @@ static int fu_write_bootloader(const struct fu_layout *layout,
 	return 0;
 }
 
-static int fu_update_fit(const struct fu_layout *layout,
-			 const struct fu_storage *storage,
-			 const struct fu_metadata_store *store, const void *fit,
-			 size_t size)
+static int fu_write_package(const struct fu_layout *layout,
+			    const struct fu_storage *storage,
+			    struct fu_metadata *metadata,
+			    const struct fu_package *package, const void *fit,
+			    size_t size, int release_deployment,
+			    u8 *deployment_out)
 {
 	struct fu_component_slot *current;
 	const struct fu_region *region;
-	struct fu_package package;
-	struct fu_metadata metadata;
 	const void *data = fit;
 	size_t data_size = size;
 	u8 source, target, deployment;
 	int ret;
 
-	ret = fu_verify_package(layout, fit, size, &package);
-	if (ret)
-		return ret;
-	if (package.component == FU_COMPONENT_KERNEL)
+	if (package->component == FU_COMPONENT_BOOTLOADER &&
+	    !layout->allow_bootloader_update)
+		return -EPERM;
+	if (package->component == FU_COMPONENT_KERNEL)
 		data_size = fit_get_size(fit);
-	ret = fu_metadata_load(store, &metadata);
-	if (ret)
-		return ret;
 
-	source = metadata.active_deployment;
-	if (!metadata.deployment[source].successful)
-		source = metadata.last_good_deployment;
-	current = &metadata.deployment[source].component[package.component];
+	if (release_deployment >= 0) {
+		deployment = release_deployment;
+		current = &metadata->deployment[deployment]
+				   .component[package->component];
+	} else {
+		source = metadata->active_deployment;
+		if (!metadata->deployment[source].successful)
+			source = metadata->last_good_deployment;
+		current = &metadata->deployment[source]
+				   .component[package->component];
+	}
 	target = 1 - current->slot;
-	if (metadata.deployment[metadata.last_good_deployment]
-			    .component[package.component]
+	if (metadata->deployment[metadata->last_good_deployment]
+			    .component[package->component]
 			    .slot == target &&
-	    metadata.last_good_deployment != source)
+	    release_deployment < 0 && metadata->last_good_deployment != source)
 		return -ENOSPC;
-	if (package.rollback_index < current->rollback_index)
+	if (package->rollback_index < current->rollback_index)
 		return -EPERM;
 
-	if (package.component == FU_COMPONENT_ROOTFS) {
-		ret = fu_fit_data(fit, package.conf_noffset, FIT_FIRMWARE_PROP,
+	if (package->component == FU_COMPONENT_ROOTFS) {
+		ret = fu_fit_data(fit, package->conf_noffset, FIT_FIRMWARE_PROP,
 				  0, &data, &data_size, NULL);
 		if (ret)
 			return ret;
 	}
-	if (package.component == FU_COMPONENT_BOOTLOADER) {
+	if (package->component == FU_COMPONENT_BOOTLOADER) {
 		ret = fu_write_bootloader(layout, storage, fit,
-					  package.conf_noffset, target);
+					  package->conf_noffset, target);
 	} else {
-		region = fu_component_region(layout, package.component, target);
+		region = fu_component_region(layout, package->component, target);
 		ret = fu_write_region(storage, region, data, data_size);
 	}
 	if (ret)
 		return ret;
 
-	ret = fu_metadata_prepare_update(&metadata, package.component, target,
-					 package.version,
-					 package.rollback_index,
-					 layout->attempts, &deployment);
+	if (release_deployment >= 0) {
+		ret = fu_metadata_stage_component(metadata, deployment,
+						  package->component, target,
+						  package->version,
+						  package->rollback_index);
+	} else {
+		ret = fu_metadata_prepare_update(metadata, package->component,
+						 target, package->version,
+						 package->rollback_index,
+						 layout->attempts, &deployment);
+	}
+	if (ret)
+		return ret;
+	if (deployment_out)
+		*deployment_out = deployment;
+
+	return 0;
+}
+
+static int fu_update_fit(const struct fu_layout *layout,
+			 const struct fu_storage *storage,
+			 const struct fu_metadata_store *store, const void *fit,
+			 size_t size, int expected_component)
+{
+	struct fu_package package;
+	struct fu_metadata metadata;
+	u8 deployment;
+	int ret;
+
+	ret = fu_verify_package(layout, fit, size, &package);
+	if (ret)
+		return ret;
+	if (expected_component >= 0 && package.component != expected_component)
+		return -EINVAL;
+	ret = fu_metadata_load(store, &metadata);
+	if (ret)
+		return ret;
+	ret = fu_write_package(layout, storage, &metadata, &package, fit, size,
+			       -1, &deployment);
 	if (ret)
 		return ret;
 	ret = fu_metadata_save(store, &metadata);
@@ -661,7 +841,10 @@ static int fu_update_fit(const struct fu_layout *layout,
 		return ret;
 
 	printf("Updated %s slot %c; deployment %u is pending (%u tries)\n",
-	       fu_component_name(package.component), 'a' + target, deployment,
+	       fu_component_name(package.component),
+	       'a' + metadata.deployment[deployment]
+			     .component[package.component].slot,
+	       deployment,
 	       layout->attempts);
 	return 0;
 }
@@ -741,6 +924,37 @@ static int fu_export_selection(const struct fu_layout *layout,
 	return 0;
 }
 
+static bool fu_file_name_valid(const char *file)
+{
+	const char *p;
+
+	if (!file || !*file || strstr(file, ".."))
+		return false;
+	for (p = file; *p; p++) {
+		if (!isalnum(*p) && !strchr("._/-", *p))
+			return false;
+	}
+
+	return true;
+}
+
+static int fu_tftp_image(const char *file, const void **fit, size_t *size)
+{
+	ulong addr;
+
+	if (!fu_file_name_valid(file))
+		return -EINVAL;
+	addr = env_get_hex("loadaddr", image_load_addr);
+	if (run_commandf("tftpboot %lx %s", addr, file))
+		return -EIO;
+	*size = env_get_hex("filesize", 0);
+	if (!*size)
+		return -EINVAL;
+	*fit = map_sysmem(addr, *size);
+
+	return 0;
+}
+
 static int fu_get_image(int argc, char *const argv[], const void **fit,
 			size_t *size)
 {
@@ -754,14 +968,7 @@ static int fu_get_image(int argc, char *const argv[], const void **fit,
 		if (argc != 2)
 			return -EINVAL;
 		file = argv[1];
-		for (const char *p = file; *p; p++) {
-			if (!isalnum(*p) && !strchr("._/-", *p))
-				return -EINVAL;
-		}
-		addr = env_get_hex("loadaddr", image_load_addr);
-		if (run_commandf("tftpboot %lx %s", addr, file))
-			return -EIO;
-		*size = env_get_hex("filesize", 0);
+		return fu_tftp_image(file, fit, size);
 	} else if (!strcmp(argv[0], "addr")) {
 		if (argc != 3)
 			return -EINVAL;
@@ -774,6 +981,107 @@ static int fu_get_image(int argc, char *const argv[], const void **fit,
 		return -EINVAL;
 
 	*fit = map_sysmem(addr, *size);
+	return 0;
+}
+
+static int fu_metadata_store_is_blank(const struct fu_metadata_store *store)
+{
+	u8 buf[FU_METADATA_SIZE];
+	int copy, i, ret;
+
+	for (copy = 0; copy < FU_METADATA_COPIES; copy++) {
+		ret = store->read(store->ctx, copy, buf, sizeof(buf));
+		if (ret)
+			return ret;
+		for (i = 0; i < sizeof(buf); i++) {
+			if (buf[i] != 0x00 && buf[i] != 0xff)
+				return -EBADMSG;
+		}
+	}
+
+	return 0;
+}
+
+static int fu_update_release(const struct fu_layout *layout,
+			     const struct fu_storage *storage,
+			     const struct fu_metadata_store *store,
+			     const void *fit, size_t size)
+{
+	struct fu_release_component *item;
+	struct fu_package package;
+	struct fu_metadata metadata;
+	struct fu_release release;
+	const void *component_fit;
+	u8 digest[FU_SHA256_SIZE];
+	size_t component_size;
+	u8 deployment;
+	int digest_size, i, ret;
+
+	memset(&release, 0, sizeof(release));
+	ret = fu_verify_release(layout, fit, size, &release);
+	if (ret)
+		return ret;
+	ret = fu_metadata_load(store, &metadata);
+	if (ret)
+		return ret;
+	ret = fu_metadata_begin_release(&metadata, release.version,
+					&deployment);
+	if (ret)
+		return ret;
+
+	for (i = 0; i < release.count; i++) {
+		item = &release.component[i];
+		if (item->component == FU_COMPONENT_BOOTLOADER &&
+		    !release.allow_bootloader)
+			return -EPERM;
+
+		ret = fu_tftp_image(item->file, &component_fit, &component_size);
+		if (ret)
+			return ret;
+		if (component_size > UINT_MAX) {
+			ret = -EFBIG;
+			goto unmap_component;
+		}
+		digest_size = sizeof(digest);
+		ret = hash_block("sha256", component_fit, component_size, digest,
+				 &digest_size);
+		if (ret)
+			goto unmap_component;
+		if (digest_size != FU_SHA256_SIZE ||
+		    memcmp(digest, item->sha256, FU_SHA256_SIZE)) {
+			ret = -EBADMSG;
+			goto unmap_component;
+		}
+
+		ret = fu_verify_package(layout, component_fit, component_size,
+					&package);
+		if (ret)
+			goto unmap_component;
+		if (package.component != item->component ||
+		    package.rollback_index < release.rollback_index) {
+			ret = -EPERM;
+			goto unmap_component;
+		}
+		ret = fu_write_package(layout, storage, &metadata, &package,
+				       component_fit, component_size, deployment,
+				       NULL);
+
+unmap_component:
+		unmap_sysmem(component_fit);
+		if (ret)
+			return ret;
+	}
+
+	ret = fu_metadata_commit_release(&metadata, deployment,
+					 layout->attempts);
+	if (ret)
+		return ret;
+	ret = fu_metadata_save(store, &metadata);
+	if (ret)
+		return ret;
+
+	printf("Updated release %u; deployment %u is pending (%u tries)\n",
+	       release.version, deployment, layout->attempts);
 	return 0;
 }
 
@@ -825,6 +1133,16 @@ static int do_fu(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[])
 	}
 
 	ret = fu_metadata_load(&store, &metadata);
+	if (ret == -ENODATA && !strcmp(argv[1], "select") &&
+	    layout.auto_init && !fu_metadata_store_is_blank(&store)) {
+		fu_metadata_init(&metadata, layout.default_slot);
+		ret = fu_metadata_save(&store, &metadata);
+		if (!ret)
+			ret = fu_metadata_save(&store, &metadata);
+		if (!ret)
+			printf("Initialized blank metadata with slot %c active\n",
+			       'a' + layout.default_slot);
+	}
 	if (ret) {
 		printf("fu: metadata unavailable (%d); run 'fu init a|b'\n",
 		       ret);
@@ -905,23 +1223,55 @@ static int do_fu(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[])
 		goto out;
 	}
 
+	if (!strcmp(argv[1], "update") && argc == 5 &&
+	    !strcmp(argv[4], "all")) {
+		if (strcmp(argv[2], "tftp"))
+			return CMD_RET_USAGE;
+		ret = fu_get_image(2, argv + 2, &fit, &fit_size);
+		if (ret)
+			goto out;
+		ret = fu_update_release(&layout, &storage, &store, fit, fit_size);
+		unmap_sysmem(fit);
+		goto out;
+	}
+
 	if (!strcmp(argv[1], "verify") || !strcmp(argv[1], "update") ||
 	    !strcmp(argv[1], "restore")) {
-		ret = fu_get_image(argc - 2, argv + 2, &fit, &fit_size);
+		enum fu_component expected;
+		int image_arg = 2;
+		int expected_component = -1;
+
+		if (!strcmp(argv[1], "restore")) {
+			if (argc < 4 || fu_component_from_name(argv[2], &expected))
+				return CMD_RET_USAGE;
+			expected_component = expected;
+			image_arg = 3;
+		}
+		ret = fu_get_image(argc - image_arg, argv + image_arg, &fit,
+				   &fit_size);
 		if (ret)
 			goto out;
 		if (!strcmp(argv[1], "verify")) {
 			struct fu_package package;
+			struct fu_release release;
 
 			ret = fu_verify_package(&layout, fit, fit_size,
 						&package);
-			if (!ret)
+			if (!ret) {
 				printf("Valid %s package, version %u, rollback %u\n",
 				       fu_component_name(package.component),
 				       package.version, package.rollback_index);
+			} else if (ret == -EOPNOTSUPP) {
+				memset(&release, 0, sizeof(release));
+				ret = fu_verify_release(&layout, fit, fit_size, &release);
+				if (!ret)
+					printf("Valid release package, version %u, rollback %u\n",
+					       release.version,
+					       release.rollback_index);
+			}
 		} else {
 			ret = fu_update_fit(&layout, &storage, &store, fit,
-					    fit_size);
+					    fit_size, expected_component);
 		}
 		unmap_sysmem(fit);
 		goto out;
@@ -940,11 +1290,12 @@ U_BOOT_LONGHELP(fu, "list\n"
 		    "fu init <a|b>\n"
 		    "fu verify <tftp file|addr address size>\n"
 		    "fu update <tftp file|addr address size>\n"
-		    "fu restore <tftp file|addr address size>\n"
+		    "fu update tftp <release-file> all\n"
+		    "fu restore <component> <tftp file|addr address size>\n"
 		    "fu select\n"
 		    "fu boot <deployment> [once]\n"
 		    "fu mark-good [deployment]\n"
 		    "fu mark-bad <deployment>\n"
 		    "fu rollback");
 
-U_BOOT_CMD(fu, 6, 1, do_fu, "RAW A/B firmware upgrade", fu_help_text);
+U_BOOT_CMD(fu, 7, 1, do_fu, "RAW A/B firmware upgrade", fu_help_text);

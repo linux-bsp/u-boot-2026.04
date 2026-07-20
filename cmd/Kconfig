@@ -195,6 +195,7 @@ config CMD_FU
 	depends on FIT && OF_CONTROL
 	depends on BLK || DM_SPI_FLASH
 	select CRC32
+	select SHA256
 	help
 	  Provide FIT-verified component updates for fixed RAW layouts on MMC,
 	  SD, and SPI NOR. The trusted layout is read from the U-Boot control

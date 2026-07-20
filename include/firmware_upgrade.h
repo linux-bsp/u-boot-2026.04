@@ -69,6 +69,13 @@ int fu_metadata_prepare_update(struct fu_metadata *metadata,
 			       enum fu_component component, u8 slot,
 			       u32 version, u32 rollback_index, u8 attempts,
 			       u8 *deployment);
+int fu_metadata_begin_release(struct fu_metadata *metadata,
+			      u32 release_version, u8 *deployment);
+int fu_metadata_stage_component(struct fu_metadata *metadata, u8 deployment,
+				enum fu_component component, u8 slot,
+				u32 version, u32 rollback_index);
+int fu_metadata_commit_release(struct fu_metadata *metadata, u8 deployment,
+			       u8 attempts);
 int fu_metadata_mark_good(struct fu_metadata *metadata, int deployment);
 int fu_metadata_mark_bad(struct fu_metadata *metadata, u8 deployment);
 int fu_metadata_rollback(struct fu_metadata *metadata);

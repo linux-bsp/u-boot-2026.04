@@ -348,6 +348,82 @@ int fu_metadata_prepare_update(struct fu_metadata *metadata,
 	return 0;
 }
 
+int fu_metadata_begin_release(struct fu_metadata *metadata,
+			      u32 release_version, u8 *deployment)
+{
+	struct fu_deployment *source, *target;
+	u8 source_id, target_id;
+
+	if (!release_version || !deployment)
+		return -EINVAL;
+	if (metadata->pending_deployment != FU_SLOT_NONE)
+		return -EBUSY;
+
+	source_id = metadata->active_deployment;
+	source = &metadata->deployment[source_id];
+	if (!source->successful || !fu_deployment_valid(source)) {
+		source_id = metadata->last_good_deployment;
+		source = &metadata->deployment[source_id];
+	}
+	if (!source->successful || !fu_deployment_valid(source))
+		return -ENOENT;
+	if (release_version < source->release_version)
+		return -EPERM;
+
+	target_id = 1 - source_id;
+	target = &metadata->deployment[target_id];
+	*target = *source;
+	target->state = FU_STATE_WRITING;
+	target->tries_remaining = 0;
+	target->successful = 0;
+	target->release_version = release_version;
+	metadata->update_state = FU_STATE_WRITING;
+	*deployment = target_id;
+
+	return 0;
+}
+
+int fu_metadata_stage_component(struct fu_metadata *metadata, u8 deployment,
+				enum fu_component component, u8 slot,
+				u32 version, u32 rollback_index)
+{
+	struct fu_component_slot *target;
+
+	if (deployment > 1 || component >= FU_COMPONENT_COUNT || slot > 1)
+		return -EINVAL;
+	if (metadata->deployment[deployment].state != FU_STATE_WRITING)
+		return -EINVAL;
+
+	target = &metadata->deployment[deployment].component[component];
+	target->slot = slot;
+	target->valid = 1;
+	target->version = version;
+	target->rollback_index = rollback_index;
+
+	return 0;
+}
+
+int fu_metadata_commit_release(struct fu_metadata *metadata, u8 deployment,
+			       u8 attempts)
+{
+	struct fu_deployment *target;
+
+	if (deployment > 1 || !attempts)
+		return -EINVAL;
+	target = &metadata->deployment[deployment];
+	if (target->state != FU_STATE_WRITING ||
+	    !fu_deployment_valid(target))
+		return -EINVAL;
+
+	target->state = FU_STATE_READY;
+	target->tries_remaining = attempts;
+	target->successful = 0;
+	metadata->pending_deployment = deployment;
+	metadata->update_state = FU_STATE_READY;
+
+	return 0;
+}
+
 int fu_metadata_mark_good(struct fu_metadata *metadata, int deployment)
 {
 	struct fu_deployment *target;
