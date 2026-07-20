@@ -57,6 +57,11 @@ Example (addresses are illustrative and are not an AM62x production layout):
 	};
 
 The layout belongs in a board U-Boot dtsi, not in a mutable environment.
+For the AM62x integration, a bootloader FIT contains images named tiboot3,
+tispl, and uboot. They are written to the selected slot in the order uboot,
+tispl, tiboot3 so that the earliest boot stage is changed last. This ordering
+is a platform integration detail, not a framework policy that makes a
+first-stage image immutable.
 When "spl-selects" is present, the first mutable SPL stage calls
 fu_metadata_select() and saves state transitions. Later stages call
 fu_metadata_get_selected(). Only one stage may consume a boot attempt.

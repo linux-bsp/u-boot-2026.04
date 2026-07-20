@@ -70,11 +70,10 @@ For the "am62x-sd-ab-v1" layout the boot chain is::
     ROM -> tiboot3_a -> tispl_a or tispl_b -> uboot_a or uboot_b
         -> kernel_a or kernel_b -> rootfs_a or rootfs_b
 
-The ROM always loads "tiboot3_a" at offset 0. Therefore "tiboot3_a" is the
-immutable first-stage selector and is installed only by a factory or recovery
-procedure. An online bootloader package contains only "tispl" and "uboot". The
-command rejects a bootloader FIT which references an image named "tiboot3"
-because such an update cannot be rolled back safely on SD RAW boot.
+The ROM always loads "tiboot3_a" at offset 0. A bootloader update package
+contains the complete AM62x boot chain: "tiboot3", "tispl", and "uboot". The
+command writes them to the target slot in reverse boot order, with "tiboot3"
+last, before committing the pending deployment metadata.
 
 The AM62x offsets and sectors are:
 
@@ -88,6 +87,7 @@ metadata copy 0    0x00500000   0x2800
 metadata copy 1    0x00510000   0x2880
 environment        0x00600000   0x3000
 environment backup 0x00620000   0x3100
+tiboot3_b          0x00700000   0x3800
 tispl_b            0x00800000   0x4000
 uboot_b            0x00a00000   0x5000
 kernel_a           0x01000000   0x8000
@@ -135,8 +135,8 @@ the "firmware" property. The referenced image data, not the FIT wrapper, is
 written to the rootfs RAW region.
 
 A bootloader package uses "fu,type = bootloader". Its configuration must
-reference images named exactly "uboot" and "tispl". A minimal unsigned ITS for
-development is::
+reference images named exactly "tiboot3", "tispl", and "uboot". A minimal
+unsigned ITS for development is::
 
     /dts-v1/;
 
@@ -145,6 +145,13 @@ development is::
         #address-cells = <1>;
 
         images {
+            tiboot3 {
+                data = /incbin/("tiboot3.bin");
+                type = "firmware";
+                arch = "arm";
+                compression = "none";
+                hash-1 { algo = "sha256"; };
+            };
             uboot {
                 data = /incbin/("u-boot.img");
                 type = "firmware";
@@ -164,8 +171,8 @@ development is::
         configurations {
             default = "conf-1";
             conf-1 {
-                firmware = "uboot";
-                loadables = "tispl";
+                firmware = "tiboot3";
+                loadables = "tispl", "uboot";
                 fu,type = "bootloader";
                 fu,product = "ti-am62x";
                 fu,layout-id = "am62x-sd-ab-v1";
@@ -253,10 +260,13 @@ device tree. Hash-only FIT files detect corruption but do not authenticate the
 publisher. The fixed layout must also be part of the trusted control device
 tree.
 
-On AM62x SD RAW boot, "tiboot3_a" is an immutable selector. Online bootloader
-packages update U-Boot first and tispl second in the inactive slot. R5 SPL
-commits one metadata selection, A53 SPL reuses it, and U-Boot proper loads
-kernel and rootfs from that same deployment.
+On AM62x SD RAW boot, the ROM always reads "tiboot3_a" at offset 0 and cannot
+select "tiboot3_b" from the metadata. The debug-oriented bootloader update
+writes U-Boot first, tispl second, and tiboot3 last in the target slot. Updating
+slot A therefore overwrites the ROM-loaded first stage and is not power-fail
+safe; a failed update may require reflashing the card. R5 SPL commits one
+metadata selection, A53 SPL reuses it, and U-Boot proper loads kernel and rootfs
+from that same deployment.
 
 The optional "auto-init" layout property initializes metadata only when both
 copies contain erased bytes. Corrupt non-empty metadata still requires an

@@ -717,27 +717,26 @@ static int fu_write_bootloader(const struct fu_layout *layout,
 			       const struct fu_storage *storage,
 			       const void *fit, int conf, u8 slot)
 {
-	static const char *const order[] = { "uboot", "tispl" };
+	static const struct {
+		const char *name;
+		enum fu_region_id region_a;
+	} images[] = {
+		/* Write the later boot stages first and tiboot3 last. */
+		{ "uboot",   FU_REGION_UBOOT_A },
+		{ "tispl",   FU_REGION_TISPL_A },
+		{ "tiboot3", FU_REGION_TIBOOT3_A },
+	};
 	const void *data;
 	size_t size;
 	int i, ret;
-	enum fu_region_id id;
 
-	ret = fu_fit_named_data(fit, conf, "tiboot3", &data, &size);
-	if (!ret)
-		return -EPERM;
-	if (ret != -ENOENT)
-		return ret;
-
-	for (i = 0; i < ARRAY_SIZE(order); i++) {
-		ret = fu_fit_named_data(fit, conf, order[i], &data, &size);
+	for (i = 0; i < ARRAY_SIZE(images); i++) {
+		ret = fu_fit_named_data(fit, conf, images[i].name, &data, &size);
 		if (ret)
 			return ret;
-		if (!strcmp(order[i], "tispl"))
-			id = FU_REGION_TISPL_A + slot;
-		else
-			id = FU_REGION_UBOOT_A + slot;
-		ret = fu_write_region(storage, &layout->region[id], data, size);
+		ret = fu_write_region(storage,
+				      &layout->region[images[i].region_a + slot],
+				      data, size);
 		if (ret)
 			return ret;
 	}
