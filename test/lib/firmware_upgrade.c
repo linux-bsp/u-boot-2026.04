@@ -109,6 +109,72 @@ static int lib_test_fu_metadata_rollback(struct unit_test_state *uts)
 
 LIB_TEST(lib_test_fu_metadata_rollback, 0);
 
+static int lib_test_fu_metadata_cross_stage_selection(struct unit_test_state *uts)
+{
+	struct fu_metadata_store store;
+	struct fu_test_store data;
+	struct fu_metadata metadata;
+	u8 deployment;
+
+	fu_test_setup(&data, &store);
+	fu_metadata_init(&metadata, 0);
+	ut_assertok(fu_metadata_save(&store, &metadata));
+	ut_assertok(fu_metadata_save(&store, &metadata));
+	ut_assertok(fu_metadata_prepare_update(&metadata,
+					       FU_COMPONENT_BOOTLOADER, 1,
+					       2, 2, 1, &deployment));
+
+	ut_asserteq(1, fu_metadata_select(&metadata, &deployment));
+	ut_asserteq(1, deployment);
+	ut_asserteq(0, metadata.deployment[1].tries_remaining);
+	ut_assertok(fu_metadata_get_selected(&metadata, &deployment));
+	ut_asserteq(1, deployment);
+	ut_asserteq(0, metadata.deployment[1].tries_remaining);
+
+	ut_assertok(fu_metadata_save(&store, &metadata));
+	ut_assertok(fu_metadata_load(&store, &metadata));
+	ut_assertok(fu_metadata_get_selected(&metadata, &deployment));
+	ut_asserteq(1, deployment);
+
+	ut_asserteq(1, fu_metadata_select(&metadata, &deployment));
+	ut_asserteq(0, deployment);
+	ut_asserteq(0, metadata.selected_deployment);
+	ut_asserteq(FU_STATE_FAILED, metadata.deployment[1].state);
+	ut_asserteq(FU_SLOT_NONE, metadata.pending_deployment);
+
+	return 0;
+}
+
+LIB_TEST(lib_test_fu_metadata_cross_stage_selection, 0);
+
+static int lib_test_fu_metadata_boot_once_cross_stage(struct unit_test_state *uts)
+{
+	struct fu_metadata metadata;
+	u8 deployment;
+
+	fu_metadata_init(&metadata, 0);
+	ut_assertok(fu_metadata_prepare_update(&metadata, FU_COMPONENT_ROOTFS,
+					       1, 2, 2, 3, &deployment));
+	metadata.pending_deployment = FU_SLOT_NONE;
+	metadata.boot_once_deployment = deployment;
+
+	ut_asserteq(1, fu_metadata_select(&metadata, &deployment));
+	ut_asserteq(1, deployment);
+	ut_asserteq(FU_SLOT_NONE, metadata.boot_once_deployment);
+	ut_assertok(fu_metadata_get_selected(&metadata, &deployment));
+	ut_asserteq(1, deployment);
+	ut_asserteq(3, metadata.deployment[1].tries_remaining);
+
+	ut_asserteq(1, fu_metadata_select(&metadata, &deployment));
+	ut_asserteq(0, deployment);
+	ut_assertok(fu_metadata_get_selected(&metadata, &deployment));
+	ut_asserteq(0, deployment);
+
+	return 0;
+}
+
+LIB_TEST(lib_test_fu_metadata_boot_once_cross_stage, 0);
+
 static int lib_test_fu_metadata_redundancy(struct unit_test_state *uts)
 {
 	struct fu_metadata_store store;

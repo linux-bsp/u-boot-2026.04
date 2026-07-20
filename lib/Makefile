@@ -106,6 +106,7 @@ obj-$(CONFIG_$(PHASE_)MBEDTLS_LIB) += mbedtls/
 obj-$(CONFIG_NET_LWIP) += lwip/
 
 ifdef CONFIG_XPL_BUILD
+obj-$(CONFIG_$(PHASE_)FU_BOOT_SELECTOR) += firmware_upgrade.o
 obj-$(CONFIG_SPL_YMODEM_SUPPORT) += crc16-ccitt.o
 obj-$(CONFIG_$(PHASE_)HASH) += crc16-ccitt.o
 obj-$(CONFIG_MMC_SPI_CRC_ON) += crc16-ccitt.o

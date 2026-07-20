@@ -36,7 +36,8 @@ struct fu_disk_metadata {
 	u8 last_good_deployment;
 	u8 boot_once_deployment;
 	u8 update_state;
-	u8 reserved0[3];
+	u8 selected_deployment;
+	u8 reserved0[2];
 	struct fu_disk_deployment deployment[2];
 	u8 reserved1[16];
 	__le32 crc32;
@@ -92,6 +93,7 @@ void fu_metadata_init(struct fu_metadata *metadata, u8 slot)
 	memset(metadata, 0, sizeof(*metadata));
 	metadata->pending_deployment = FU_SLOT_NONE;
 	metadata->boot_once_deployment = FU_SLOT_NONE;
+	metadata->selected_deployment = 0;
 	metadata->source_copy = 1;
 	metadata->active_deployment = 0;
 	metadata->last_good_deployment = 0;
@@ -128,6 +130,7 @@ static int fu_metadata_decode(const void *buf, struct fu_metadata *metadata)
 	metadata->pending_deployment = disk->pending_deployment;
 	metadata->last_good_deployment = disk->last_good_deployment;
 	metadata->boot_once_deployment = disk->boot_once_deployment;
+	metadata->selected_deployment = disk->selected_deployment;
 	metadata->update_state = disk->update_state;
 
 	for (i = 0; i < 2; i++) {
@@ -153,7 +156,8 @@ static int fu_metadata_decode(const void *buf, struct fu_metadata *metadata)
 	    (metadata->pending_deployment != FU_SLOT_NONE &&
 	     metadata->pending_deployment > 1) ||
 	    (metadata->boot_once_deployment != FU_SLOT_NONE &&
-	     metadata->boot_once_deployment > 1))
+	     metadata->boot_once_deployment > 1) ||
+	    metadata->selected_deployment > 1)
 		return -EINVAL;
 
 	return 0;
@@ -174,6 +178,7 @@ static void fu_metadata_encode(const struct fu_metadata *metadata, void *buf)
 	disk->pending_deployment = metadata->pending_deployment;
 	disk->last_good_deployment = metadata->last_good_deployment;
 	disk->boot_once_deployment = metadata->boot_once_deployment;
+	disk->selected_deployment = metadata->selected_deployment;
 	disk->update_state = metadata->update_state;
 
 	for (i = 0; i < 2; i++) {
@@ -267,9 +272,10 @@ int fu_metadata_select(struct fu_metadata *metadata, u8 *deployment)
 
 	if (metadata->boot_once_deployment != FU_SLOT_NONE) {
 		selected = metadata->boot_once_deployment;
-		metadata->boot_once_deployment = FU_SLOT_NONE;
 		if (!fu_deployment_valid(&metadata->deployment[selected]))
 			return -EINVAL;
+		metadata->boot_once_deployment = FU_SLOT_NONE;
+		metadata->selected_deployment = selected;
 		*deployment = selected;
 		return 1;
 	}
@@ -281,6 +287,7 @@ int fu_metadata_select(struct fu_metadata *metadata, u8 *deployment)
 		    candidate->tries_remaining) {
 			candidate->state = FU_STATE_BOOT_TESTING;
 			candidate->tries_remaining--;
+			metadata->selected_deployment = selected;
 			*deployment = selected;
 			return 1;
 		}
@@ -299,8 +306,27 @@ int fu_metadata_select(struct fu_metadata *metadata, u8 *deployment)
 	    !fu_deployment_valid(&metadata->deployment[selected]))
 		return -ENOENT;
 
+	if (metadata->selected_deployment != selected) {
+		metadata->selected_deployment = selected;
+		changed = true;
+	}
 	*deployment = selected;
 	return changed;
+}
+
+int fu_metadata_get_selected(const struct fu_metadata *metadata, u8 *deployment)
+{
+	u8 selected;
+
+	if (!metadata || !deployment)
+		return -EINVAL;
+	selected = metadata->selected_deployment;
+	if (selected > 1 ||
+	    !fu_deployment_valid(&metadata->deployment[selected]))
+		return -ENOENT;
+
+	*deployment = selected;
+	return 0;
 }
 
 int fu_metadata_prepare_update(struct fu_metadata *metadata,
@@ -441,6 +467,7 @@ int fu_metadata_mark_good(struct fu_metadata *metadata, int deployment)
 	target->tries_remaining = 0;
 	metadata->active_deployment = deployment;
 	metadata->last_good_deployment = deployment;
+	metadata->selected_deployment = deployment;
 	metadata->pending_deployment = FU_SLOT_NONE;
 	metadata->update_state = FU_STATE_CONFIRMED;
 
@@ -459,6 +486,8 @@ int fu_metadata_mark_bad(struct fu_metadata *metadata, u8 deployment)
 		metadata->pending_deployment = FU_SLOT_NONE;
 	if (metadata->active_deployment == deployment)
 		metadata->active_deployment = metadata->last_good_deployment;
+	if (metadata->selected_deployment == deployment)
+		metadata->selected_deployment = metadata->last_good_deployment;
 	metadata->update_state = FU_STATE_FAILED;
 
 	return 0;
@@ -478,6 +507,7 @@ int fu_metadata_rollback(struct fu_metadata *metadata)
 	metadata->pending_deployment = FU_SLOT_NONE;
 	metadata->boot_once_deployment = FU_SLOT_NONE;
 	metadata->active_deployment = target;
+	metadata->selected_deployment = target;
 	metadata->update_state = FU_STATE_CONFIRMED;
 
 	return 0;

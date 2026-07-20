@@ -46,6 +46,7 @@ struct fu_metadata {
 	u8 pending_deployment;
 	u8 last_good_deployment;
 	u8 boot_once_deployment;
+	u8 selected_deployment;
 	u8 update_state;
 	struct fu_deployment deployment[2];
 	u8 source_copy;
@@ -65,6 +66,8 @@ int fu_metadata_load(const struct fu_metadata_store *store,
 int fu_metadata_save(const struct fu_metadata_store *store,
 		     struct fu_metadata *metadata);
 int fu_metadata_select(struct fu_metadata *metadata, u8 *deployment);
+int fu_metadata_get_selected(const struct fu_metadata *metadata,
+			     u8 *deployment);
 int fu_metadata_prepare_update(struct fu_metadata *metadata,
 			       enum fu_component component, u8 slot,
 			       u32 version, u32 rollback_index, u8 attempts,

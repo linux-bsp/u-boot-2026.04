@@ -7,7 +7,9 @@
  *
  */
 
+#include <blk.h>
 #include <efi_loader.h>
+#include <firmware_upgrade.h>
 #include <env.h>
 #include <spl.h>
 #include <init.h>
@@ -15,6 +17,8 @@
 #include <splash.h>
 #include <cpu_func.h>
 #include <k3-ddrss.h>
+#include <memalign.h>
+#include <mmc.h>
 #include <fdt_support.h>
 #include <fdt_simplefb.h>
 #include <asm/io.h>
@@ -33,6 +37,111 @@
 #define board_is_am62x_sip_skevm()  board_ti_k3_is("AM62SIP-SKEVM")
 
 DECLARE_GLOBAL_DATA_PTR;
+
+#if CONFIG_IS_ENABLED(FU_BOOT_SELECTOR)
+struct fu_spl_store_ctx {
+	struct blk_desc *blk;
+};
+
+static ulong fu_spl_metadata_offset(unsigned int copy)
+{
+	return copy ? CONFIG_SPL_FU_METADATA1_OFFSET :
+		      CONFIG_SPL_FU_METADATA0_OFFSET;
+}
+
+static int fu_spl_metadata_read(void *ctx, unsigned int copy, void *buf,
+				size_t len)
+{
+	ALLOC_CACHE_ALIGN_BUFFER(u8, block, MMC_MAX_BLOCK_LEN);
+	struct fu_spl_store_ctx *store = ctx;
+	ulong offset = fu_spl_metadata_offset(copy);
+
+	if (copy >= FU_METADATA_COPIES || len > store->blk->blksz ||
+	    store->blk->blksz > MMC_MAX_BLOCK_LEN ||
+	    offset % store->blk->blksz)
+		return -EINVAL;
+	if (blk_dread(store->blk, offset / store->blk->blksz, 1, block) != 1)
+		return -EIO;
+
+	memcpy(buf, block, len);
+	return 0;
+}
+
+static int fu_spl_metadata_write(void *ctx, unsigned int copy, const void *buf,
+				 size_t len)
+{
+	ALLOC_CACHE_ALIGN_BUFFER(u8, block, MMC_MAX_BLOCK_LEN);
+	struct fu_spl_store_ctx *store = ctx;
+	ulong offset = fu_spl_metadata_offset(copy);
+
+	if (copy >= FU_METADATA_COPIES || len > store->blk->blksz ||
+	    store->blk->blksz > MMC_MAX_BLOCK_LEN ||
+	    offset % store->blk->blksz)
+		return -EINVAL;
+
+	memset(block, 0xff, store->blk->blksz);
+	memcpy(block, buf, len);
+	if (blk_dwrite(store->blk, offset / store->blk->blksz, 1, block) != 1)
+		return -EIO;
+
+	return 0;
+}
+
+unsigned long board_spl_mmc_get_uboot_raw_sector(struct mmc *mmc,
+						 unsigned long raw_sect)
+{
+	struct fu_spl_store_ctx ctx = { .blk = mmc_get_blk_desc(mmc) };
+	struct fu_metadata_store store = {
+		.read = fu_spl_metadata_read,
+		.ctx = &ctx,
+	};
+	struct fu_metadata metadata;
+	u8 selected, slot;
+	int ret;
+
+	ret = fu_metadata_load(&store, &metadata);
+	if (ret) {
+		printf("SPL: fu metadata unavailable (%d), using slot A\n", ret);
+		return raw_sect;
+	}
+
+	if (CONFIG_IS_ENABLED(FU_BOOT_SELECTOR_COMMIT)) {
+		store.write = fu_spl_metadata_write;
+		ret = fu_metadata_select(&metadata, &selected);
+		if (ret > 0 && fu_metadata_save(&store, &metadata)) {
+			printf("SPL: cannot commit fu selection, using last-good\n");
+			selected = metadata.last_good_deployment;
+			if (selected > 1 ||
+			    !metadata.deployment[selected].successful)
+				return raw_sect;
+		} else if (ret < 0) {
+			printf("SPL: cannot select fu deployment (%d), using slot A\n",
+			       ret);
+			return raw_sect;
+		}
+	} else {
+		ret = fu_metadata_get_selected(&metadata, &selected);
+		if (ret) {
+			printf("SPL: no committed fu selection (%d), using slot A\n",
+			       ret);
+			return raw_sect;
+		}
+	}
+
+	if (selected > 1 ||
+	    !metadata.deployment[selected]
+		     .component[FU_COMPONENT_BOOTLOADER].valid)
+		return raw_sect;
+	slot = metadata.deployment[selected]
+		       .component[FU_COMPONENT_BOOTLOADER].slot;
+	if (slot > 1)
+		return raw_sect;
+
+	printf("SPL: fu deployment %u, bootloader slot %c\n", selected,
+	       'a' + slot);
+	return slot ? CONFIG_SPL_FU_RAW_SECTOR_B : raw_sect;
+}
+#endif
 
 #if CONFIG_IS_ENABLED(SPLASH_SCREEN)
 static struct splash_location default_splash_locations[] = {

@@ -16,6 +16,11 @@ Required parent properties:
 Optional parent properties:
 
 - boot-attempts: number of attempts for a pending deployment, default 3
+- default-slot: slot declared active by automatic initialization, default 0
+- auto-init: initialize metadata on the first boot when both copies are erased
+- allow-bootloader-update: permit verified bootloader component packages
+- spl-selects: the platform SPL commits the deployment selection; U-Boot proper
+  only exports the selection and must not decrement attempts a second time
 
 The node must have the following children:
 
@@ -52,3 +57,6 @@ Example (addresses are illustrative and are not an AM62x production layout):
 	};
 
 The layout belongs in a board U-Boot dtsi, not in a mutable environment.
+When "spl-selects" is present, the first mutable SPL stage calls
+fu_metadata_select() and saves state transitions. Later stages call
+fu_metadata_get_selected(). Only one stage may consume a boot attempt.

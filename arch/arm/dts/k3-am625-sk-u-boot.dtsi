@@ -16,9 +16,13 @@
 		boot-attempts = <3>;
 		default-slot = <0>;
 		auto-init;
+		spl-selects;
+		allow-bootloader-update;
 
 		meta0 { offset = <0 0x00500000>; size = <0 0x00010000>; };
 		meta1 { offset = <0 0x00510000>; size = <0 0x00010000>; };
+
+		/* Redundant U-Boot environments: 0x600000 and 0x620000. */
 		tiboot3_a { offset = <0 0x00000000>; size = <0 0x00100000>; };
 		tiboot3_b { offset = <0 0x00700000>; size = <0 0x00100000>; };
 		tispl_a { offset = <0 0x00100000>; size = <0 0x00200000>; };

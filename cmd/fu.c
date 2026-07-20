@@ -60,6 +60,7 @@ struct fu_layout {
 	u8 default_slot;
 	bool auto_init;
 	bool allow_bootloader_update;
+	bool spl_selects;
 	const char *product;
 	const char *layout_id;
 	struct fu_region region[FU_REGION_COUNT];
@@ -143,6 +144,7 @@ static int fu_read_layout(struct fu_layout *layout)
 	layout->auto_init = ofnode_read_bool(node, "auto-init");
 	layout->allow_bootloader_update =
 		ofnode_read_bool(node, "allow-bootloader-update");
+	layout->spl_selects = ofnode_read_bool(node, "spl-selects");
 
 	for (i = 0; i < FU_REGION_COUNT; i++) {
 		child = ofnode_find_subnode(node, fu_region_names[i]);
@@ -715,19 +717,23 @@ static int fu_write_bootloader(const struct fu_layout *layout,
 			       const struct fu_storage *storage,
 			       const void *fit, int conf, u8 slot)
 {
-	static const char *const order[] = { "uboot", "tispl", "tiboot3" };
+	static const char *const order[] = { "uboot", "tispl" };
 	const void *data;
 	size_t size;
 	int i, ret;
 	enum fu_region_id id;
 
+	ret = fu_fit_named_data(fit, conf, "tiboot3", &data, &size);
+	if (!ret)
+		return -EPERM;
+	if (ret != -ENOENT)
+		return ret;
+
 	for (i = 0; i < ARRAY_SIZE(order); i++) {
 		ret = fu_fit_named_data(fit, conf, order[i], &data, &size);
 		if (ret)
 			return ret;
-		if (!strcmp(order[i], "tiboot3"))
-			id = FU_REGION_TIBOOT3_A + slot;
-		else if (!strcmp(order[i], "tispl"))
+		if (!strcmp(order[i], "tispl"))
 			id = FU_REGION_TISPL_A + slot;
 		else
 			id = FU_REGION_UBOOT_A + slot;
@@ -859,7 +865,8 @@ static void fu_print_metadata(const struct fu_metadata *metadata)
 		printf("none");
 	else
 		printf("%u", metadata->pending_deployment);
-	printf("  last-good: %u\n", metadata->last_good_deployment);
+	printf("  last-good: %u  selected: %u\n",
+	       metadata->last_good_deployment, metadata->selected_deployment);
 
 	for (i = 0; i < 2; i++) {
 		const struct fu_deployment *deployment =
@@ -1155,10 +1162,13 @@ static int do_fu(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[])
 	}
 
 	if (!strcmp(argv[1], "select")) {
-		ret = fu_metadata_select(&metadata, &selected);
+		if (layout.spl_selects)
+			ret = fu_metadata_get_selected(&metadata, &selected);
+		else
+			ret = fu_metadata_select(&metadata, &selected);
 		if (ret < 0)
 			goto out;
-		if (ret > 0) {
+		if (!layout.spl_selects && ret > 0) {
 			ret = fu_metadata_save(&store, &metadata);
 			if (ret)
 				goto out;
