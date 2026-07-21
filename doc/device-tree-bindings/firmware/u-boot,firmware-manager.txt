@@ -1,17 +1,17 @@
-U-Boot fixed-RAW firmware upgrade layout
+U-Boot fixed-RAW firmware manager layout
 ========================================
 
-The firmware upgrade command reads a trusted fixed layout from the U-Boot
+The firmware manager command reads a trusted fixed layout from the U-Boot
 control device tree. Exactly one enabled node is allowed.
 
 Required parent properties:
 
-- compatible: must be "u-boot,firmware-upgrade"
+- compatible: must be "u-boot,firmware-manager"
 - storage: "mmc" for eMMC/SD, or "spi-nor"
 - device: MMC device number; required for "mmc"
 - bus and cs: SPI bus and chip select; used for "spi-nor"
-- product: value required in the FIT configuration fu,product property
-- layout-id: value required in the FIT configuration fu,layout-id property
+- product: value required in the FIT configuration fw,product property
+- layout-id: value required in the FIT configuration fw,layout-id property
 
 Optional parent properties:
 
@@ -34,8 +34,8 @@ the device erase size, and meta0 and meta1 must use different erase blocks.
 
 Example (addresses are illustrative and are not an AM62x production layout):
 
-	firmware-upgrade {
-		compatible = "u-boot,firmware-upgrade";
+	firmware-manager {
+		compatible = "u-boot,firmware-manager";
 		storage = "mmc";
 		device = <1>;
 		product = "ti-am62x";
@@ -63,5 +63,5 @@ tispl, tiboot3 so that the earliest boot stage is changed last. This ordering
 is a platform integration detail, not a framework policy that makes a
 first-stage image immutable.
 When "spl-selects" is present, the first mutable SPL stage calls
-fu_metadata_select() and saves state transitions. Later stages call
-fu_metadata_get_selected(). Only one stage may consume a boot attempt.
+fw_metadata_select() and saves state transitions. Later stages call
+fw_metadata_get_selected(). Only one stage may consume a boot attempt.

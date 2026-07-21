@@ -10,7 +10,7 @@ obj-$(CONFIG_EFI_LOADER) += efi_driver/
 obj-$(CONFIG_EFI_LOADER) += efi_loader/
 obj-$(CONFIG_CMD_BOOTEFI_SELFTEST) += efi_selftest/
 obj-$(CONFIG_FWU_MULTI_BANK_UPDATE) += fwu_updates/
-obj-$(CONFIG_CMD_FU) += firmware_upgrade.o
+obj-$(CONFIG_CMD_FW) += firmware_manager.o
 obj-$(CONFIG_LZMA) += lzma/
 obj-$(CONFIG_BZIP2) += bzip2/
 obj-$(CONFIG_FIT) += libfdt/
@@ -106,7 +106,7 @@ obj-$(CONFIG_$(PHASE_)MBEDTLS_LIB) += mbedtls/
 obj-$(CONFIG_NET_LWIP) += lwip/
 
 ifdef CONFIG_XPL_BUILD
-obj-$(CONFIG_$(PHASE_)FU_BOOT_SELECTOR) += firmware_upgrade.o
+obj-$(CONFIG_$(PHASE_)FW_BOOT_SELECTOR) += firmware_manager.o
 obj-$(CONFIG_SPL_YMODEM_SUPPORT) += crc16-ccitt.o
 obj-$(CONFIG_$(PHASE_)HASH) += crc16-ccitt.o
 obj-$(CONFIG_MMC_SPI_CRC_ON) += crc16-ccitt.o

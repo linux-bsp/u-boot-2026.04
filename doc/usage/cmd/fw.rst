@@ -1,6 +1,6 @@
 .. SPDX-License-Identifier: GPL-2.0+
 
-fu command
+fw command
 ==========
 
 Synopsis
@@ -8,25 +8,25 @@ Synopsis
 
 ::
 
-    fu list
-    fu status
-    fu init <a|b>
-    fu verify <tftp file|addr address size>
-    fu update <tftp file|addr address size>
-    fu update tftp <release-file> all
-    fu restore <component> <tftp file|addr address size>
-    fu select
-    fu boot <deployment> [once]
-    fu mark-good [deployment]
-    fu mark-bad <deployment>
-    fu rollback
+    fw list
+    fw status
+    fw init <a|b>
+    fw verify <tftp file|addr address size>
+    fw update <tftp file|addr address size>
+    fw update tftp <release-file> all
+    fw restore <component> <tftp file|addr address size>
+    fw select
+    fw boot <deployment> [once]
+    fw mark-good [deployment]
+    fw mark-bad <deployment>
+    fw rollback
 
 Description
 -----------
 
-The "fu" command updates component FIT packages in fixed RAW regions on eMMC,
+The "fw" command updates component FIT packages in fixed RAW regions on eMMC,
 SD, or SPI NOR. It verifies the default FIT configuration, all referenced image
-hashes, "fu,product", "fu,layout-id", and the rollback index before writing an
+hashes, "fw,product", "fw,layout-id", and the rollback index before writing an
 inactive slot. Data is read back before redundant metadata is committed.
 
 Separate component updates made before the next boot are merged into the same
@@ -34,31 +34,37 @@ pending deployment. For example, updating rootfs and then kernel creates one
 deployment containing both inactive slots.
 
 A release FIT is a manifest, signed in production, containing component file names and complete
-file SHA-256 digests. "fu update tftp release.itb all" downloads each listed
+file SHA-256 digests. "fw update tftp release.itb all" downloads each listed
 component, verifies the manifest digest and the component FIT, and writes all
 target slots before committing one pending deployment. A failed download,
 verification, or write leaves the current deployment selected. Bootloader
 updates additionally require both manifest permission and the trusted layout's
-"allow-bootloader-update" property. "fu restore" uses the same verified,
+"allow-bootloader-update" property. "fw restore" uses the same verified,
 read-back-checked path to recover a component into its inactive slot.
 
-"fu init" is a destructive factory operation for metadata only. It declares
+Starting a release update while another deployment is pending replaces that
+pending deployment. The manager first persists a non-bootable writing state,
+then rebuilds the target from the current confirmed deployment. This permits a
+mistaken package to be replaced immediately without booting or confirming it,
+while preventing a failed replacement from booting partially overwritten data.
+
+"fw init" is a destructive factory operation for metadata only. It declares
 that all components in the selected slot are the installed, confirmed
 deployment. It does not write component images.
 
-On platforms without an SPL selector, "fu select" selects a deployment and
+On platforms without an SPL selector, "fw select" selects a deployment and
 persists the decreased attempt count before booting an unconfirmed deployment.
 On platforms with the trusted "spl-selects" property, the first mutable SPL
-stage has already persisted that transition; "fu select" only exports the same
+stage has already persisted that transition; "fw select" only exports the same
 selection to the U-Boot environment. It exports:
 
-- "fu_deployment"
-- "fu_bootloader_slot"
-- "fu_kernel_slot" and "fu_kernel_offset"
-- "fu_rootfs_slot" and "fu_rootfs_offset"
+- "fw_deployment"
+- "fw_bootloader_slot"
+- "fw_kernel_slot" and "fw_kernel_offset"
+- "fw_rootfs_slot" and "fw_rootfs_offset"
 
 After Linux health checks pass, it records the booted deployment in the
-persistent U-Boot environment. The next U-Boot boot calls "fu mark-good" before
+persistent U-Boot environment. The next U-Boot boot calls "fw mark-good" before
 selection. If all attempts are used without confirmation, the next R5 SPL boot
 marks the pending deployment failed and loads the last-good deployment.
 
@@ -99,16 +105,21 @@ rootfs_b           0x0c000000   0x60000
 A factory image must install "tiboot3.bin", "tispl.bin", and "u-boot.img" at
 the A offsets above, then initialize metadata once::
 
-    fu init a
-    fu status
+    fw init a
+    fw status
 
 The first boot also auto-initializes completely erased metadata. Explicit
-"fu init" remains the recommended factory step and must not be used as a normal
-upgrade command. After first booting this U-Boot over an older installation,
-load the new compiled-in environment once:
+"fw init" remains the recommended factory step and must not be used as a normal
+upgrade command.
+
+The firmware manager uses the "FWMD" metadata magic and "fw,*" FIT properties.
+Metadata and packages generated for the old command namespace are intentionally
+not accepted. After first booting this U-Boot over an older installation, load
+the new compiled-in environment and initialize metadata once::
 
     env default -a
     saveenv
+    fw init a
 
 This installs the RAW A/B boot script, redundant MMC environment settings, and
 the default network addresses.
@@ -118,23 +129,23 @@ Component FIT requirements
 
 Every component FIT default configuration must contain::
 
-    fu,product = "ti-am62x";
-    fu,layout-id = "am62x-sd-ab-v1";
-    fu,version = <VERSION>;
-    fu,rollback-index = <ROLLBACK_INDEX>;
+    fw,product = "ti-am62x";
+    fw,layout-id = "am62x-sd-ab-v1";
+    fw,version = <VERSION>;
+    fw,rollback-index = <ROLLBACK_INDEX>;
 
 "VERSION" describes the component version. "ROLLBACK_INDEX" must never be lower
 than the installed component value.
 
-A kernel package uses "fu,type = kernel" and references both "kernel" and "fdt"
+A kernel package uses "fw,type = kernel" and references both "kernel" and "fdt"
 properties. The complete FIT is written to the kernel RAW region and is booted
 with "bootm". Every referenced image must contain a hash node.
 
-A rootfs package uses "fu,type = rootfs" and references the SquashFS image with
+A rootfs package uses "fw,type = rootfs" and references the SquashFS image with
 the "firmware" property. The referenced image data, not the FIT wrapper, is
 written to the rootfs RAW region.
 
-A bootloader package uses "fu,type = bootloader". Its configuration must
+A bootloader package uses "fw,type = bootloader". Its configuration must
 reference images named exactly "tiboot3", "tispl", and "uboot". A minimal
 unsigned ITS for development is::
 
@@ -173,11 +184,11 @@ unsigned ITS for development is::
             conf-1 {
                 firmware = "tiboot3";
                 loadables = "tispl", "uboot";
-                fu,type = "bootloader";
-                fu,product = "ti-am62x";
-                fu,layout-id = "am62x-sd-ab-v1";
-                fu,version = <2>;
-                fu,rollback-index = <2>;
+                fw,type = "bootloader";
+                fw,product = "ti-am62x";
+                fw,layout-id = "am62x-sd-ab-v1";
+                fw,version = <2>;
+                fw,rollback-index = <2>;
             };
         };
     };
@@ -185,72 +196,75 @@ unsigned ITS for development is::
 Build and verify it with::
 
     mkimage -f bootloader.its bootloader.itb
-    fu verify tftp bootloader.itb
+    fw verify tftp bootloader.itb
 
 Release manifest
 ----------------
 
-A release FIT configuration uses "fu,type = release" and lists one or more
-unique components in "fu,components". Each component needs a TFTP file name and
+A release FIT configuration uses "fw,type = release" and lists one or more
+unique components in "fw,components". Each component needs a TFTP file name and
 the lowercase hexadecimal SHA-256 digest of the complete component FIT::
 
-    fu,type = "release";
-    fu,product = "ti-am62x";
-    fu,layout-id = "am62x-sd-ab-v1";
-    fu,version = <2>;
-    fu,rollback-index = <2>;
-    fu,components = "bootloader", "kernel", "rootfs";
-    fu,bootloader-file = "release/bootloader.itb";
-    fu,bootloader-sha256 = "<64 hexadecimal characters>";
-    fu,kernel-file = "release/kernel.itb";
-    fu,kernel-sha256 = "<64 hexadecimal characters>";
-    fu,rootfs-file = "release/rootfs.itb";
-    fu,rootfs-sha256 = "<64 hexadecimal characters>";
-    fu,allow-bootloader;
+    fw,type = "release";
+    fw,product = "ti-am62x";
+    fw,layout-id = "am62x-sd-ab-v1";
+    fw,version = <2>;
+    fw,rollback-index = <2>;
+    fw,components = "bootloader", "kernel", "rootfs";
+    fw,bootloader-file = "bootloader.itb";
+    fw,bootloader-sha256 = "<64 hexadecimal characters>";
+    fw,kernel-file = "kernel.itb";
+    fw,kernel-sha256 = "<64 hexadecimal characters>";
+    fw,rootfs-file = "rootfs.itb";
+    fw,rootfs-sha256 = "<64 hexadecimal characters>";
+    fw,allow-bootloader;
 
 The release configuration must also reference a hashed "firmware" image.
-Bootloader updates require both "fu,allow-bootloader" in the manifest and
+Bootloader updates require both "fw,allow-bootloader" in the manifest and
 "allow-bootloader-update" in the trusted control device tree. The command
 writes and verifies every component before committing one pending deployment.
 
 Linux health confirmation
 -------------------------
 
-The AM62x default environment is redundant on MMC device 1. Linux uses::
+The Buildroot image installs "/usr/sbin/fwctl" and the
+"S99fw-mark-good" init script. The kernel command line contains
+"fw.deployment=<id>". With "AUTO_MARK_GOOD=1" in "/etc/default/fwctl",
+the init script confirms the current deployment directly in redundant metadata
+after its optional health check succeeds.
 
-    /dev/mmcblk1 0x600000 0x10000
-    /dev/mmcblk1 0x620000 0x10000
+Inspect or confirm the current deployment manually with::
 
-as "/etc/fw_env.config". The kernel command line contains
-"fu.deployment=<id>". After all health checks pass, record that id and reboot::
-
-    fw_setenv fu_confirm 1
-    reboot
-
-Use the actual id from "/proc/cmdline". On the next boot, U-Boot marks that
-deployment good, clears "fu_confirm", saves the redundant environment, and then
-continues normal selection.
+    fwctl status
+    fwctl mark-good
 
 Examples
 --------
 
 Load and update directly from TFTP::
 
-    fu update tftp bootloader.itb
-    fu update tftp kernel.itb
-    fu update tftp rootfs.itb
-    fu update tftp release/release.itb all
+    fw update tftp bootloader.itb
+    fw update tftp kernel.itb
+    fw update tftp rootfs.itb
+    fw update tftp release.itb all
+
+The AM62x default environment provides shortcuts for these commands::
+
+    run upk    # kernel.itb
+    run upr    # rootfs.itb
+    run upb    # bootloader.itb
+    run upa    # release.itb, all components
 
 Use an image already in memory::
 
     tftp ${loadaddr} kernel.itb
-    fu verify addr ${loadaddr} ${filesize}
-    fu update addr ${loadaddr} ${filesize}
+    fw verify addr ${loadaddr} ${filesize}
+    fw update addr ${loadaddr} ${filesize}
 
 Initialize a factory image and select boot offsets::
 
-    fu init a
-    fu select
+    fw init a
+    fw select
 
 Security
 --------
@@ -270,4 +284,4 @@ from that same deployment.
 
 The optional "auto-init" layout property initializes metadata only when both
 copies contain erased bytes. Corrupt non-empty metadata still requires an
-explicit factory recovery with "fu init".
+explicit factory recovery with "fw init".

@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0+
-#include <firmware_upgrade.h>
+#include <firmware_manager.h>
 #include <linux/build_bug.h>
 #include <linux/errno.h>
 #include <linux/string.h>
 #include <u-boot/crc.h>
 #include <asm/byteorder.h>
 
-#define FU_METADATA_MAGIC 0x46554d44 /* FUMD */
-#define FU_METADATA_VERSION 1
+#define FW_METADATA_MAGIC 0x46574d44 /* FWMD */
+#define FW_METADATA_VERSION 1
 
-struct fu_disk_component {
+struct fw_disk_component {
 	u8 slot;
 	u8 valid;
 	__le16 reserved;
@@ -17,8 +17,8 @@ struct fu_disk_component {
 	__le32 rollback_index;
 } __packed;
 
-struct fu_disk_deployment {
-	struct fu_disk_component component[FU_COMPONENT_COUNT];
+struct fw_disk_deployment {
+	struct fw_disk_component component[FW_COMPONENT_COUNT];
 	u8 state;
 	u8 tries_remaining;
 	u8 successful;
@@ -26,7 +26,7 @@ struct fu_disk_deployment {
 	__le32 release_version;
 } __packed;
 
-struct fu_disk_metadata {
+struct fw_disk_metadata {
 	__le32 magic;
 	__le16 format_version;
 	__le16 header_size;
@@ -38,45 +38,45 @@ struct fu_disk_metadata {
 	u8 update_state;
 	u8 selected_deployment;
 	u8 reserved0[2];
-	struct fu_disk_deployment deployment[2];
+	struct fw_disk_deployment deployment[2];
 	u8 reserved1[16];
 	__le32 crc32;
 } __packed;
 
-static_assert(sizeof(struct fu_disk_metadata) == FU_METADATA_SIZE);
+static_assert(sizeof(struct fw_disk_metadata) == FW_METADATA_SIZE);
 
-const char *fu_component_name(enum fu_component component)
+const char *fw_component_name(enum fw_component component)
 {
 	static const char *const names[] = { "bootloader", "kernel", "rootfs" };
 
-	if (component >= FU_COMPONENT_COUNT)
+	if (component >= FW_COMPONENT_COUNT)
 		return "invalid";
 
 	return names[component];
 }
 
-const char *fu_state_name(enum fu_deployment_state state)
+const char *fw_state_name(enum fw_deployment_state state)
 {
 	static const char *const names[] = {
 		"empty",	"writing",   "ready",
 		"boot-testing", "confirmed", "failed",
 	};
 
-	if (state > FU_STATE_FAILED)
+	if (state > FW_STATE_FAILED)
 		return "invalid";
 
 	return names[state];
 }
 
-static bool fu_deployment_valid(const struct fu_deployment *deployment)
+static bool fw_deployment_valid(const struct fw_deployment *deployment)
 {
 	int i;
 
-	if (deployment->state == FU_STATE_EMPTY ||
-	    deployment->state == FU_STATE_FAILED)
+	if (deployment->state == FW_STATE_EMPTY ||
+	    deployment->state == FW_STATE_FAILED)
 		return false;
 
-	for (i = 0; i < FU_COMPONENT_COUNT; i++) {
+	for (i = 0; i < FW_COMPONENT_COUNT; i++) {
 		if (!deployment->component[i].valid ||
 		    deployment->component[i].slot > 1)
 			return false;
@@ -85,42 +85,42 @@ static bool fu_deployment_valid(const struct fu_deployment *deployment)
 	return true;
 }
 
-void fu_metadata_init(struct fu_metadata *metadata, u8 slot)
+void fw_metadata_init(struct fw_metadata *metadata, u8 slot)
 {
-	struct fu_deployment *deployment;
+	struct fw_deployment *deployment;
 	int i;
 
 	memset(metadata, 0, sizeof(*metadata));
-	metadata->pending_deployment = FU_SLOT_NONE;
-	metadata->boot_once_deployment = FU_SLOT_NONE;
+	metadata->pending_deployment = FW_SLOT_NONE;
+	metadata->boot_once_deployment = FW_SLOT_NONE;
 	metadata->selected_deployment = 0;
 	metadata->source_copy = 1;
 	metadata->active_deployment = 0;
 	metadata->last_good_deployment = 0;
 
 	deployment = &metadata->deployment[0];
-	deployment->state = FU_STATE_CONFIRMED;
+	deployment->state = FW_STATE_CONFIRMED;
 	deployment->successful = 1;
-	for (i = 0; i < FU_COMPONENT_COUNT; i++) {
+	for (i = 0; i < FW_COMPONENT_COUNT; i++) {
 		deployment->component[i].slot = slot;
 		deployment->component[i].valid = 1;
 	}
-	metadata->deployment[1].state = FU_STATE_EMPTY;
+	metadata->deployment[1].state = FW_STATE_EMPTY;
 }
 
-static int fu_metadata_decode(const void *buf, struct fu_metadata *metadata)
+static int fw_metadata_decode(const void *buf, struct fw_metadata *metadata)
 {
-	const struct fu_disk_metadata *disk = buf;
+	const struct fw_disk_metadata *disk = buf;
 	u32 expected_crc, actual_crc;
 	int i, j;
 
-	if (le32_to_cpu(disk->magic) != FU_METADATA_MAGIC ||
-	    le16_to_cpu(disk->format_version) != FU_METADATA_VERSION ||
-	    le16_to_cpu(disk->header_size) != FU_METADATA_SIZE)
+	if (le32_to_cpu(disk->magic) != FW_METADATA_MAGIC ||
+	    le16_to_cpu(disk->format_version) != FW_METADATA_VERSION ||
+	    le16_to_cpu(disk->header_size) != FW_METADATA_SIZE)
 		return -EINVAL;
 
 	expected_crc = le32_to_cpu(disk->crc32);
-	actual_crc = crc32(0, buf, offsetof(struct fu_disk_metadata, crc32));
+	actual_crc = crc32(0, buf, offsetof(struct fw_disk_metadata, crc32));
 	if (actual_crc != expected_crc)
 		return -EBADMSG;
 
@@ -134,14 +134,14 @@ static int fu_metadata_decode(const void *buf, struct fu_metadata *metadata)
 	metadata->update_state = disk->update_state;
 
 	for (i = 0; i < 2; i++) {
-		struct fu_deployment *dst = &metadata->deployment[i];
-		const struct fu_disk_deployment *src = &disk->deployment[i];
+		struct fw_deployment *dst = &metadata->deployment[i];
+		const struct fw_disk_deployment *src = &disk->deployment[i];
 
 		dst->state = src->state;
 		dst->tries_remaining = src->tries_remaining;
 		dst->successful = src->successful;
 		dst->release_version = le32_to_cpu(src->release_version);
-		for (j = 0; j < FU_COMPONENT_COUNT; j++) {
+		for (j = 0; j < FW_COMPONENT_COUNT; j++) {
 			dst->component[j].slot = src->component[j].slot;
 			dst->component[j].valid = src->component[j].valid;
 			dst->component[j].version =
@@ -153,9 +153,9 @@ static int fu_metadata_decode(const void *buf, struct fu_metadata *metadata)
 
 	if (metadata->active_deployment > 1 ||
 	    metadata->last_good_deployment > 1 ||
-	    (metadata->pending_deployment != FU_SLOT_NONE &&
+	    (metadata->pending_deployment != FW_SLOT_NONE &&
 	     metadata->pending_deployment > 1) ||
-	    (metadata->boot_once_deployment != FU_SLOT_NONE &&
+	    (metadata->boot_once_deployment != FW_SLOT_NONE &&
 	     metadata->boot_once_deployment > 1) ||
 	    metadata->selected_deployment > 1)
 		return -EINVAL;
@@ -163,16 +163,16 @@ static int fu_metadata_decode(const void *buf, struct fu_metadata *metadata)
 	return 0;
 }
 
-static void fu_metadata_encode(const struct fu_metadata *metadata, void *buf)
+static void fw_metadata_encode(const struct fw_metadata *metadata, void *buf)
 {
-	struct fu_disk_metadata *disk = buf;
+	struct fw_disk_metadata *disk = buf;
 	u32 crc;
 	int i, j;
 
 	memset(disk, 0, sizeof(*disk));
-	disk->magic = cpu_to_le32(FU_METADATA_MAGIC);
-	disk->format_version = cpu_to_le16(FU_METADATA_VERSION);
-	disk->header_size = cpu_to_le16(FU_METADATA_SIZE);
+	disk->magic = cpu_to_le32(FW_METADATA_MAGIC);
+	disk->format_version = cpu_to_le16(FW_METADATA_VERSION);
+	disk->header_size = cpu_to_le16(FW_METADATA_SIZE);
 	disk->sequence = cpu_to_le32(metadata->sequence);
 	disk->active_deployment = metadata->active_deployment;
 	disk->pending_deployment = metadata->pending_deployment;
@@ -182,14 +182,14 @@ static void fu_metadata_encode(const struct fu_metadata *metadata, void *buf)
 	disk->update_state = metadata->update_state;
 
 	for (i = 0; i < 2; i++) {
-		const struct fu_deployment *src = &metadata->deployment[i];
-		struct fu_disk_deployment *dst = &disk->deployment[i];
+		const struct fw_deployment *src = &metadata->deployment[i];
+		struct fw_disk_deployment *dst = &disk->deployment[i];
 
 		dst->state = src->state;
 		dst->tries_remaining = src->tries_remaining;
 		dst->successful = src->successful;
 		dst->release_version = cpu_to_le32(src->release_version);
-		for (j = 0; j < FU_COMPONENT_COUNT; j++) {
+		for (j = 0; j < FW_COMPONENT_COUNT; j++) {
 			dst->component[j].slot = src->component[j].slot;
 			dst->component[j].valid = src->component[j].valid;
 			dst->component[j].version =
@@ -199,26 +199,26 @@ static void fu_metadata_encode(const struct fu_metadata *metadata, void *buf)
 		}
 	}
 
-	crc = crc32(0, buf, offsetof(struct fu_disk_metadata, crc32));
+	crc = crc32(0, buf, offsetof(struct fw_disk_metadata, crc32));
 	disk->crc32 = cpu_to_le32(crc);
 }
 
-static bool fu_sequence_newer(u32 lhs, u32 rhs)
+static bool fw_sequence_newer(u32 lhs, u32 rhs)
 {
 	return (s32)(lhs - rhs) > 0;
 }
 
-int fu_metadata_load(const struct fu_metadata_store *store,
-		     struct fu_metadata *metadata)
+int fw_metadata_load(const struct fw_metadata_store *store,
+		     struct fw_metadata *metadata)
 {
-	struct fu_metadata copy[FU_METADATA_COPIES];
-	u8 buf[FU_METADATA_SIZE];
-	bool valid[FU_METADATA_COPIES] = {};
+	struct fw_metadata copy[FW_METADATA_COPIES];
+	u8 buf[FW_METADATA_SIZE];
+	bool valid[FW_METADATA_COPIES] = {};
 	int i, ret;
 
-	for (i = 0; i < FU_METADATA_COPIES; i++) {
+	for (i = 0; i < FW_METADATA_COPIES; i++) {
 		ret = store->read(store->ctx, i, buf, sizeof(buf));
-		if (!ret && !fu_metadata_decode(buf, &copy[i]))
+		if (!ret && !fw_metadata_decode(buf, &copy[i]))
 			valid[i] = true;
 	}
 
@@ -226,23 +226,23 @@ int fu_metadata_load(const struct fu_metadata_store *store,
 		return -ENODATA;
 
 	i = valid[1] && (!valid[0] ||
-			 fu_sequence_newer(copy[1].sequence, copy[0].sequence));
+			 fw_sequence_newer(copy[1].sequence, copy[0].sequence));
 	*metadata = copy[i];
 	metadata->source_copy = i;
 
 	return 0;
 }
 
-int fu_metadata_save(const struct fu_metadata_store *store,
-		     struct fu_metadata *metadata)
+int fw_metadata_save(const struct fw_metadata_store *store,
+		     struct fw_metadata *metadata)
 {
-	struct fu_metadata check;
-	u8 buf[FU_METADATA_SIZE], verify[FU_METADATA_SIZE];
+	struct fw_metadata check;
+	u8 buf[FW_METADATA_SIZE], verify[FW_METADATA_SIZE];
 	unsigned int target = 1 - metadata->source_copy;
 	int ret;
 
 	metadata->sequence++;
-	fu_metadata_encode(metadata, buf);
+	fw_metadata_encode(metadata, buf);
 	ret = store->write(store->ctx, target, buf, sizeof(buf));
 	if (ret)
 		goto restore_sequence;
@@ -250,7 +250,7 @@ int fu_metadata_save(const struct fu_metadata_store *store,
 	ret = store->read(store->ctx, target, verify, sizeof(verify));
 	if (ret)
 		goto restore_sequence;
-	ret = fu_metadata_decode(verify, &check);
+	ret = fw_metadata_decode(verify, &check);
 	if (ret || check.sequence != metadata->sequence) {
 		ret = ret ?: -EIO;
 		goto restore_sequence;
@@ -264,46 +264,46 @@ restore_sequence:
 	return ret;
 }
 
-int fu_metadata_select(struct fu_metadata *metadata, u8 *deployment)
+int fw_metadata_select(struct fw_metadata *metadata, u8 *deployment)
 {
-	struct fu_deployment *candidate;
+	struct fw_deployment *candidate;
 	u8 selected;
 	bool changed = false;
 
-	if (metadata->boot_once_deployment != FU_SLOT_NONE) {
+	if (metadata->boot_once_deployment != FW_SLOT_NONE) {
 		selected = metadata->boot_once_deployment;
-		if (!fu_deployment_valid(&metadata->deployment[selected]))
+		if (!fw_deployment_valid(&metadata->deployment[selected]))
 			return -EINVAL;
-		metadata->boot_once_deployment = FU_SLOT_NONE;
+		metadata->boot_once_deployment = FW_SLOT_NONE;
 		metadata->selected_deployment = selected;
 		*deployment = selected;
 		return 1;
 	}
 
-	if (metadata->pending_deployment != FU_SLOT_NONE) {
+	if (metadata->pending_deployment != FW_SLOT_NONE) {
 		selected = metadata->pending_deployment;
 		candidate = &metadata->deployment[selected];
-		if (fu_deployment_valid(candidate) &&
+		if (fw_deployment_valid(candidate) &&
 		    candidate->tries_remaining) {
-			candidate->state = FU_STATE_BOOT_TESTING;
+			candidate->state = FW_STATE_BOOT_TESTING;
 			candidate->tries_remaining--;
 			metadata->selected_deployment = selected;
 			*deployment = selected;
 			return 1;
 		}
 
-		candidate->state = FU_STATE_FAILED;
-		metadata->pending_deployment = FU_SLOT_NONE;
+		candidate->state = FW_STATE_FAILED;
+		metadata->pending_deployment = FW_SLOT_NONE;
 		metadata->active_deployment = metadata->last_good_deployment;
 		changed = true;
 	}
 
 	selected = metadata->active_deployment;
 	if (!metadata->deployment[selected].successful ||
-	    !fu_deployment_valid(&metadata->deployment[selected]))
+	    !fw_deployment_valid(&metadata->deployment[selected]))
 		selected = metadata->last_good_deployment;
 	if (!metadata->deployment[selected].successful ||
-	    !fu_deployment_valid(&metadata->deployment[selected]))
+	    !fw_deployment_valid(&metadata->deployment[selected]))
 		return -ENOENT;
 
 	if (metadata->selected_deployment != selected) {
@@ -314,7 +314,7 @@ int fu_metadata_select(struct fu_metadata *metadata, u8 *deployment)
 	return changed;
 }
 
-int fu_metadata_get_selected(const struct fu_metadata *metadata, u8 *deployment)
+int fw_metadata_get_selected(const struct fw_metadata *metadata, u8 *deployment)
 {
 	u8 selected;
 
@@ -322,37 +322,37 @@ int fu_metadata_get_selected(const struct fu_metadata *metadata, u8 *deployment)
 		return -EINVAL;
 	selected = metadata->selected_deployment;
 	if (selected > 1 ||
-	    !fu_deployment_valid(&metadata->deployment[selected]))
+	    !fw_deployment_valid(&metadata->deployment[selected]))
 		return -ENOENT;
 
 	*deployment = selected;
 	return 0;
 }
 
-int fu_metadata_prepare_update(struct fu_metadata *metadata,
-			       enum fu_component component, u8 slot,
+int fw_metadata_prepare_update(struct fw_metadata *metadata,
+			       enum fw_component component, u8 slot,
 			       u32 version, u32 rollback_index, u8 attempts,
 			       u8 *deployment)
 {
-	struct fu_deployment *source, *target;
+	struct fw_deployment *source, *target;
 	u8 source_id, target_id;
 
-	if (component >= FU_COMPONENT_COUNT || slot > 1 || !attempts)
+	if (component >= FW_COMPONENT_COUNT || slot > 1 || !attempts)
 		return -EINVAL;
 
 	source_id = metadata->active_deployment;
 	source = &metadata->deployment[source_id];
-	if (!source->successful || !fu_deployment_valid(source)) {
+	if (!source->successful || !fw_deployment_valid(source)) {
 		source_id = metadata->last_good_deployment;
 		source = &metadata->deployment[source_id];
 	}
-	if (!source->successful || !fu_deployment_valid(source))
+	if (!source->successful || !fw_deployment_valid(source))
 		return -ENOENT;
 
-	if (metadata->pending_deployment != FU_SLOT_NONE) {
+	if (metadata->pending_deployment != FW_SLOT_NONE) {
 		target_id = metadata->pending_deployment;
 		target = &metadata->deployment[target_id];
-		if (!fu_deployment_valid(target))
+		if (!fw_deployment_valid(target))
 			return -EINVAL;
 	} else {
 		target_id = 1 - source_id;
@@ -365,59 +365,64 @@ int fu_metadata_prepare_update(struct fu_metadata *metadata,
 	target->component[component].valid = 1;
 	target->component[component].version = version;
 	target->component[component].rollback_index = rollback_index;
-	target->state = FU_STATE_READY;
+	target->state = FW_STATE_READY;
 	target->tries_remaining = attempts;
 	target->successful = 0;
-	metadata->update_state = FU_STATE_READY;
+	metadata->update_state = FW_STATE_READY;
 	*deployment = target_id;
 
 	return 0;
 }
 
-int fu_metadata_begin_release(struct fu_metadata *metadata,
+int fw_metadata_begin_release(struct fw_metadata *metadata,
 			      u32 release_version, u8 *deployment)
 {
-	struct fu_deployment *source, *target;
+	struct fw_deployment *source, *target;
 	u8 source_id, target_id;
 
-	if (!release_version || !deployment)
+	if (!metadata || !release_version || !deployment)
 		return -EINVAL;
-	if (metadata->pending_deployment != FU_SLOT_NONE)
-		return -EBUSY;
 
 	source_id = metadata->active_deployment;
 	source = &metadata->deployment[source_id];
-	if (!source->successful || !fu_deployment_valid(source)) {
+	if (!source->successful || !fw_deployment_valid(source)) {
 		source_id = metadata->last_good_deployment;
 		source = &metadata->deployment[source_id];
 	}
-	if (!source->successful || !fu_deployment_valid(source))
+	if (!source->successful || !fw_deployment_valid(source))
 		return -ENOENT;
 	if (release_version < source->release_version)
 		return -EPERM;
 
 	target_id = 1 - source_id;
+	if (metadata->pending_deployment != FW_SLOT_NONE &&
+	    metadata->pending_deployment != target_id)
+		return -EINVAL;
+
 	target = &metadata->deployment[target_id];
 	*target = *source;
-	target->state = FU_STATE_WRITING;
+	target->state = FW_STATE_WRITING;
 	target->tries_remaining = 0;
 	target->successful = 0;
 	target->release_version = release_version;
-	metadata->update_state = FU_STATE_WRITING;
+	metadata->pending_deployment = FW_SLOT_NONE;
+	metadata->boot_once_deployment = FW_SLOT_NONE;
+	metadata->selected_deployment = source_id;
+	metadata->update_state = FW_STATE_WRITING;
 	*deployment = target_id;
 
 	return 0;
 }
 
-int fu_metadata_stage_component(struct fu_metadata *metadata, u8 deployment,
-				enum fu_component component, u8 slot,
+int fw_metadata_stage_component(struct fw_metadata *metadata, u8 deployment,
+				enum fw_component component, u8 slot,
 				u32 version, u32 rollback_index)
 {
-	struct fu_component_slot *target;
+	struct fw_component_slot *target;
 
-	if (deployment > 1 || component >= FU_COMPONENT_COUNT || slot > 1)
+	if (deployment > 1 || component >= FW_COMPONENT_COUNT || slot > 1)
 		return -EINVAL;
-	if (metadata->deployment[deployment].state != FU_STATE_WRITING)
+	if (metadata->deployment[deployment].state != FW_STATE_WRITING)
 		return -EINVAL;
 
 	target = &metadata->deployment[deployment].component[component];
@@ -429,30 +434,30 @@ int fu_metadata_stage_component(struct fu_metadata *metadata, u8 deployment,
 	return 0;
 }
 
-int fu_metadata_commit_release(struct fu_metadata *metadata, u8 deployment,
+int fw_metadata_commit_release(struct fw_metadata *metadata, u8 deployment,
 			       u8 attempts)
 {
-	struct fu_deployment *target;
+	struct fw_deployment *target;
 
 	if (deployment > 1 || !attempts)
 		return -EINVAL;
 	target = &metadata->deployment[deployment];
-	if (target->state != FU_STATE_WRITING ||
-	    !fu_deployment_valid(target))
+	if (target->state != FW_STATE_WRITING ||
+	    !fw_deployment_valid(target))
 		return -EINVAL;
 
-	target->state = FU_STATE_READY;
+	target->state = FW_STATE_READY;
 	target->tries_remaining = attempts;
 	target->successful = 0;
 	metadata->pending_deployment = deployment;
-	metadata->update_state = FU_STATE_READY;
+	metadata->update_state = FW_STATE_READY;
 
 	return 0;
 }
 
-int fu_metadata_mark_good(struct fu_metadata *metadata, int deployment)
+int fw_metadata_mark_good(struct fw_metadata *metadata, int deployment)
 {
-	struct fu_deployment *target;
+	struct fw_deployment *target;
 
 	if (deployment < 0)
 		deployment = metadata->pending_deployment;
@@ -460,55 +465,55 @@ int fu_metadata_mark_good(struct fu_metadata *metadata, int deployment)
 		return -EINVAL;
 
 	target = &metadata->deployment[deployment];
-	if (!fu_deployment_valid(target))
+	if (!fw_deployment_valid(target))
 		return -EINVAL;
-	target->state = FU_STATE_CONFIRMED;
+	target->state = FW_STATE_CONFIRMED;
 	target->successful = 1;
 	target->tries_remaining = 0;
 	metadata->active_deployment = deployment;
 	metadata->last_good_deployment = deployment;
 	metadata->selected_deployment = deployment;
-	metadata->pending_deployment = FU_SLOT_NONE;
-	metadata->update_state = FU_STATE_CONFIRMED;
+	metadata->pending_deployment = FW_SLOT_NONE;
+	metadata->update_state = FW_STATE_CONFIRMED;
 
 	return 0;
 }
 
-int fu_metadata_mark_bad(struct fu_metadata *metadata, u8 deployment)
+int fw_metadata_mark_bad(struct fw_metadata *metadata, u8 deployment)
 {
 	if (deployment > 1)
 		return -EINVAL;
 
-	metadata->deployment[deployment].state = FU_STATE_FAILED;
+	metadata->deployment[deployment].state = FW_STATE_FAILED;
 	metadata->deployment[deployment].successful = 0;
 	metadata->deployment[deployment].tries_remaining = 0;
 	if (metadata->pending_deployment == deployment)
-		metadata->pending_deployment = FU_SLOT_NONE;
+		metadata->pending_deployment = FW_SLOT_NONE;
 	if (metadata->active_deployment == deployment)
 		metadata->active_deployment = metadata->last_good_deployment;
 	if (metadata->selected_deployment == deployment)
 		metadata->selected_deployment = metadata->last_good_deployment;
-	metadata->update_state = FU_STATE_FAILED;
+	metadata->update_state = FW_STATE_FAILED;
 
 	return 0;
 }
 
-int fu_metadata_rollback(struct fu_metadata *metadata)
+int fw_metadata_rollback(struct fw_metadata *metadata)
 {
 	u8 target = metadata->last_good_deployment;
 
 	if (target > 1 || !metadata->deployment[target].successful ||
-	    !fu_deployment_valid(&metadata->deployment[target]))
+	    !fw_deployment_valid(&metadata->deployment[target]))
 		return -ENOENT;
 
-	if (metadata->pending_deployment != FU_SLOT_NONE)
+	if (metadata->pending_deployment != FW_SLOT_NONE)
 		metadata->deployment[metadata->pending_deployment].state =
-			FU_STATE_FAILED;
-	metadata->pending_deployment = FU_SLOT_NONE;
-	metadata->boot_once_deployment = FU_SLOT_NONE;
+			FW_STATE_FAILED;
+	metadata->pending_deployment = FW_SLOT_NONE;
+	metadata->boot_once_deployment = FW_SLOT_NONE;
 	metadata->active_deployment = target;
 	metadata->selected_deployment = target;
-	metadata->update_state = FU_STATE_CONFIRMED;
+	metadata->update_state = FW_STATE_CONFIRMED;
 
 	return 0;
 }

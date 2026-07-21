@@ -23,9 +23,9 @@
 	#address-cells = <1>;
 	#size-cells = <1>;
 
-#ifdef CONFIG_CMD_FU
-	firmware-upgrade {
-		compatible = "u-boot,firmware-upgrade";
+#ifdef CONFIG_CMD_FW
+	firmware-manager {
+		compatible = "u-boot,firmware-manager";
 		storage = "mmc";
 		device = <0>;
 		product = "sandbox";
