@@ -97,6 +97,7 @@ void fw_metadata_init(struct fw_metadata *metadata, u8 slot)
 	metadata->source_copy = 1;
 	metadata->active_deployment = 0;
 	metadata->last_good_deployment = 0;
+	metadata->update_state = FW_STATE_CONFIRMED;
 
 	deployment = &metadata->deployment[0];
 	deployment->state = FW_STATE_CONFIRMED;

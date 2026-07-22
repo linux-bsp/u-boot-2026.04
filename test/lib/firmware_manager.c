@@ -51,6 +51,7 @@ static int lib_test_fw_metadata_lifecycle(struct unit_test_state *uts)
 	ut_asserteq(-ENODATA, fw_metadata_load(&store, &metadata));
 
 	fw_metadata_init(&metadata, 0);
+	ut_asserteq(FW_STATE_CONFIRMED, metadata.update_state);
 	ut_assertok(fw_metadata_save(&store, &metadata));
 	ut_assertok(fw_metadata_save(&store, &metadata));
 	ut_assertok(fw_metadata_load(&store, &metadata));
