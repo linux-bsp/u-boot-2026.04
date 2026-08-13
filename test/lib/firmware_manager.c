@@ -59,10 +59,10 @@ static int lib_test_fw_metadata_lifecycle(struct unit_test_state *uts)
 	ut_asserteq(0, metadata.active_deployment);
 
 	ut_assertok(fw_metadata_prepare_update(&metadata, FW_COMPONENT_KERNEL,
-					       1, 4, 7, 3, &deployment));
+					       1, 4, 7, 0, 3, &deployment));
 	ut_asserteq(1, deployment);
 	ut_assertok(fw_metadata_prepare_update(&metadata, FW_COMPONENT_ROOTFS,
-					       1, 5, 8, 3, &deployment));
+					       1, 5, 8, 0, 3, &deployment));
 	ut_asserteq(1, deployment);
 	ut_asserteq(1,
 		    metadata.deployment[1].component[FW_COMPONENT_KERNEL].slot);
@@ -96,7 +96,7 @@ static int lib_test_fw_metadata_rollback(struct unit_test_state *uts)
 	ut_assertok(fw_metadata_save(&store, &metadata));
 	ut_assertok(fw_metadata_save(&store, &metadata));
 	ut_assertok(fw_metadata_prepare_update(&metadata, FW_COMPONENT_ROOTFS,
-					       1, 2, 2, 1, &deployment));
+					       1, 2, 2, 0, 1, &deployment));
 
 	ut_asserteq(1, fw_metadata_select(&metadata, &deployment));
 	ut_asserteq(0, metadata.deployment[1].tries_remaining);
@@ -123,7 +123,7 @@ static int lib_test_fw_metadata_cross_stage_selection(struct unit_test_state *ut
 	ut_assertok(fw_metadata_save(&store, &metadata));
 	ut_assertok(fw_metadata_prepare_update(&metadata,
 					       FW_COMPONENT_BOOTLOADER, 1,
-					       2, 2, 1, &deployment));
+					       2, 2, 0, 1, &deployment));
 
 	ut_asserteq(1, fw_metadata_select(&metadata, &deployment));
 	ut_asserteq(1, deployment);
@@ -155,7 +155,7 @@ static int lib_test_fw_metadata_boot_once_cross_stage(struct unit_test_state *ut
 
 	fw_metadata_init(&metadata, 0);
 	ut_assertok(fw_metadata_prepare_update(&metadata, FW_COMPONENT_ROOTFS,
-					       1, 2, 2, 3, &deployment));
+					       1, 2, 2, 0, 3, &deployment));
 	metadata.pending_deployment = FW_SLOT_NONE;
 	metadata.boot_once_deployment = deployment;
 
@@ -213,10 +213,12 @@ static int lib_test_fw_release_transaction(struct unit_test_state *uts)
 	ut_asserteq(FW_STATE_WRITING, metadata.deployment[deployment].state);
 
 	ret = fw_metadata_stage_component(&metadata, deployment,
-					  FW_COMPONENT_KERNEL, 1, 10, 20);
+					  FW_COMPONENT_KERNEL, 1, 10, 20,
+					  30000000);
 	ut_assertok(ret);
 	ret = fw_metadata_stage_component(&metadata, deployment,
-					  FW_COMPONENT_ROOTFS, 1, 11, 21);
+					  FW_COMPONENT_ROOTFS, 1, 11, 21,
+					  30000001);
 	ut_assertok(ret);
 	ut_asserteq(FW_SLOT_NONE, metadata.pending_deployment);
 
@@ -224,6 +226,10 @@ static int lib_test_fw_release_transaction(struct unit_test_state *uts)
 	ut_asserteq(deployment, metadata.pending_deployment);
 	ut_asserteq(FW_STATE_READY, metadata.deployment[deployment].state);
 	ut_asserteq(4, metadata.deployment[deployment].release_version);
+	ut_asserteq(30000000, metadata.deployment[deployment]
+				.component[FW_COMPONENT_KERNEL].build_time_minutes);
+	ut_asserteq(30000001, metadata.deployment[deployment]
+				.component[FW_COMPONENT_ROOTFS].build_time_minutes);
 	ut_asserteq(1, metadata.deployment[deployment]
 				.component[FW_COMPONENT_KERNEL].slot);
 	ut_asserteq(1, metadata.deployment[deployment]
@@ -243,7 +249,7 @@ static int lib_test_fw_release_restarts_pending(struct unit_test_state *uts)
 	fw_metadata_init(&metadata, 0);
 	metadata.deployment[0].release_version = 3;
 	ut_assertok(fw_metadata_prepare_update(&metadata,
-					       FW_COMPONENT_KERNEL, 1, 9, 9, 3,
+					       FW_COMPONENT_KERNEL, 1, 9, 9, 0, 3,
 					       &pending));
 	ut_asserteq(1, pending);
 	ut_asserteq(pending, metadata.pending_deployment);

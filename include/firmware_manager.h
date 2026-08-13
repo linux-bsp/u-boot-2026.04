@@ -30,6 +30,7 @@ struct fw_component_slot {
 	u8 valid;
 	u32 version;
 	u32 rollback_index;
+	u32 build_time_minutes;
 };
 
 struct fw_deployment {
@@ -70,13 +71,16 @@ int fw_metadata_get_selected(const struct fw_metadata *metadata,
 			     u8 *deployment);
 int fw_metadata_prepare_update(struct fw_metadata *metadata,
 			       enum fw_component component, u8 slot,
-			       u32 version, u32 rollback_index, u8 attempts,
+			       u32 version, u32 rollback_index,
+			       u32 build_time_minutes,
+			       u8 attempts,
 			       u8 *deployment);
 int fw_metadata_begin_release(struct fw_metadata *metadata,
 			      u32 release_version, u8 *deployment);
 int fw_metadata_stage_component(struct fw_metadata *metadata, u8 deployment,
 				enum fw_component component, u8 slot,
-				u32 version, u32 rollback_index);
+				u32 version, u32 rollback_index,
+				u32 build_time_minutes);
 int fw_metadata_commit_release(struct fw_metadata *metadata, u8 deployment,
 			       u8 attempts);
 int fw_metadata_mark_good(struct fw_metadata *metadata, int deployment);

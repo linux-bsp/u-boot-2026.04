@@ -80,6 +80,7 @@ struct fw_package {
 	int conf_noffset;
 	u32 version;
 	u32 rollback_index;
+	u32 build_time_minutes;
 };
 
 struct fw_release_component {
@@ -537,6 +538,12 @@ static int fw_verify_package(const struct fw_layout *layout, const void *fit,
 			 &package->rollback_index);
 	if (ret)
 		return ret;
+	ret = fw_fit_u32(fit, conf, "fw,build-time-minutes",
+			 &package->build_time_minutes);
+	if (ret == -FDT_ERR_NOTFOUND)
+		package->build_time_minutes = 0;
+	else if (ret)
+		return ret;
 
 	if (package->component == FW_COMPONENT_KERNEL) {
 		ret = fw_verify_prop(fit, conf, FIT_KERNEL_PROP);
@@ -821,11 +828,13 @@ static int fw_write_package(const struct fw_layout *layout,
 		ret = fw_metadata_stage_component(metadata, deployment,
 						  package->component, target,
 						  package->version,
-						  package->rollback_index);
+						  package->rollback_index,
+						  package->build_time_minutes);
 	} else {
 		ret = fw_metadata_prepare_update(metadata, package->component,
 						 target, package->version,
 						 package->rollback_index,
+						 package->build_time_minutes,
 						 layout->attempts, &deployment);
 	}
 	if (ret)

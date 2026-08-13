@@ -8,6 +8,7 @@
 
 #define FW_METADATA_MAGIC 0x46574d44 /* FWMD */
 #define FW_METADATA_VERSION 1
+#define FW_BUILD_TIME_MAGIC 0x314d5442
 
 struct fw_disk_component {
 	u8 slot;
@@ -113,6 +114,8 @@ static int fw_metadata_decode(const void *buf, struct fw_metadata *metadata)
 {
 	const struct fw_disk_metadata *disk = buf;
 	u32 expected_crc, actual_crc;
+	__le32 magic;
+	__le16 high[FW_METADATA_COPIES][FW_COMPONENT_COUNT];
 	int i, j;
 
 	if (le32_to_cpu(disk->magic) != FW_METADATA_MAGIC ||
@@ -133,6 +136,8 @@ static int fw_metadata_decode(const void *buf, struct fw_metadata *metadata)
 	metadata->boot_once_deployment = disk->boot_once_deployment;
 	metadata->selected_deployment = disk->selected_deployment;
 	metadata->update_state = disk->update_state;
+	memcpy(&magic, disk->reserved1, sizeof(magic));
+	memcpy(high, disk->reserved1 + sizeof(magic), sizeof(high));
 
 	for (i = 0; i < 2; i++) {
 		struct fw_deployment *dst = &metadata->deployment[i];
@@ -149,6 +154,10 @@ static int fw_metadata_decode(const void *buf, struct fw_metadata *metadata)
 				le32_to_cpu(src->component[j].version);
 			dst->component[j].rollback_index =
 				le32_to_cpu(src->component[j].rollback_index);
+			if (le32_to_cpu(magic) == FW_BUILD_TIME_MAGIC)
+				dst->component[j].build_time_minutes =
+					((u32)le16_to_cpu(high[i][j]) << 16) |
+					le16_to_cpu(src->component[j].reserved);
 		}
 	}
 
@@ -168,6 +177,8 @@ static void fw_metadata_encode(const struct fw_metadata *metadata, void *buf)
 {
 	struct fw_disk_metadata *disk = buf;
 	u32 crc;
+	__le32 magic = cpu_to_le32(FW_BUILD_TIME_MAGIC);
+	__le16 high[FW_METADATA_COPIES][FW_COMPONENT_COUNT] = {};
 	int i, j;
 
 	memset(disk, 0, sizeof(*disk));
@@ -197,8 +208,14 @@ static void fw_metadata_encode(const struct fw_metadata *metadata, void *buf)
 				cpu_to_le32(src->component[j].version);
 			dst->component[j].rollback_index =
 				cpu_to_le32(src->component[j].rollback_index);
+			dst->component[j].reserved =
+				cpu_to_le16(src->component[j].build_time_minutes & 0xffff);
+			high[i][j] =
+				cpu_to_le16(src->component[j].build_time_minutes >> 16);
 		}
 	}
+	memcpy(disk->reserved1, &magic, sizeof(magic));
+	memcpy(disk->reserved1 + sizeof(magic), high, sizeof(high));
 
 	crc = crc32(0, buf, offsetof(struct fw_disk_metadata, crc32));
 	disk->crc32 = cpu_to_le32(crc);
@@ -332,7 +349,9 @@ int fw_metadata_get_selected(const struct fw_metadata *metadata, u8 *deployment)
 
 int fw_metadata_prepare_update(struct fw_metadata *metadata,
 			       enum fw_component component, u8 slot,
-			       u32 version, u32 rollback_index, u8 attempts,
+			       u32 version, u32 rollback_index,
+			       u32 build_time_minutes,
+			       u8 attempts,
 			       u8 *deployment)
 {
 	struct fw_deployment *source, *target;
@@ -366,6 +385,7 @@ int fw_metadata_prepare_update(struct fw_metadata *metadata,
 	target->component[component].valid = 1;
 	target->component[component].version = version;
 	target->component[component].rollback_index = rollback_index;
+	target->component[component].build_time_minutes = build_time_minutes;
 	target->state = FW_STATE_READY;
 	target->tries_remaining = attempts;
 	target->successful = 0;
@@ -417,7 +437,8 @@ int fw_metadata_begin_release(struct fw_metadata *metadata,
 
 int fw_metadata_stage_component(struct fw_metadata *metadata, u8 deployment,
 				enum fw_component component, u8 slot,
-				u32 version, u32 rollback_index)
+				u32 version, u32 rollback_index,
+				u32 build_time_minutes)
 {
 	struct fw_component_slot *target;
 
@@ -431,6 +452,7 @@ int fw_metadata_stage_component(struct fw_metadata *metadata, u8 deployment,
 	target->valid = 1;
 	target->version = version;
 	target->rollback_index = rollback_index;
+	target->build_time_minutes = build_time_minutes;
 
 	return 0;
 }
