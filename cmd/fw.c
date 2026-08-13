@@ -355,19 +355,30 @@ static int fw_write_region(const struct fw_storage *storage,
 		return -EFBIG;
 
 	if (storage->type == FW_STORAGE_SPI_NOR) {
+		printf("fw: erasing %s: size=%#llx\n", region->name,
+		       (unsigned long long)region->size);
 		ret = spi_flash_erase_dm(storage->sf, region->offset,
 					 region->size);
-		if (ret)
+		if (ret) {
+			printf("fw: erase failed for %s (%d)\n", region->name, ret);
 			return ret;
+		}
 	}
 
+	printf("fw: writing %s: offset=%#llx size=%zu\n", region->name,
+	       (unsigned long long)region->offset, size);
 	ret = fw_storage_write(storage, region->offset, data, size);
-	if (ret)
+	if (ret) {
+		printf("fw: write failed for %s (%d)\n", region->name, ret);
 		return ret;
+	}
 
+	printf("fw: verifying %s...\n", region->name);
 	verify = memalign(ARCH_DMA_MINALIGN, FW_VERIFY_CHUNK);
-	if (!verify)
+	if (!verify) {
+		printf("fw: verify allocation failed for %s\n", region->name);
 		return -ENOMEM;
+	}
 	for (offset = 0; offset < size; offset += chunk) {
 		chunk = min_t(size_t, FW_VERIFY_CHUNK, size - offset);
 		ret = fw_storage_read(storage, region->offset + offset, verify,
@@ -378,8 +389,14 @@ static int fw_write_region(const struct fw_storage *storage,
 		}
 	}
 	free(verify);
+	if (ret) {
+		printf("fw: verify failed for %s (%d)\n", region->name, ret);
+		return ret;
+	}
 
-	return ret;
+	printf("fw: partition %s update succeeded\n", region->name);
+
+	return 0;
 }
 
 struct fw_store_ctx {
@@ -845,7 +862,8 @@ static int fw_update_fit(const struct fw_layout *layout,
 	if (ret)
 		return ret;
 
-	printf("Updated %s slot %c; deployment %u is pending (%u tries)\n",
+	printf("Firmware component %s upgrade succeeded: slot %c; "
+	       "deployment %u is pending (%u tries)\n",
 	       fw_component_name(package.component),
 	       'a' + metadata.deployment[deployment]
 			     .component[package.component].slot,
@@ -1084,6 +1102,8 @@ unmap_component:
 		unmap_sysmem(component_fit);
 		if (ret)
 			return ret;
+		printf("fw: component %s staged successfully\n",
+		       fw_component_name(package.component));
 	}
 
 	ret = fw_metadata_commit_release(&metadata, deployment,
@@ -1094,8 +1114,9 @@ unmap_component:
 	if (ret)
 		return ret;
 
-	printf("Updated release %u; deployment %u is pending (%u tries)\n",
-	       release.version, deployment, layout->attempts);
+	printf("Firmware upgrade succeeded: release %u\n", release.version);
+	printf("Deployment %u is pending (%u tries)\n", deployment,
+	       layout->attempts);
 	return 0;
 }
 
