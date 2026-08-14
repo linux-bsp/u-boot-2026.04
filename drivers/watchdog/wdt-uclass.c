@@ -95,6 +95,20 @@ static void init_watchdog_dev(struct udevice *dev)
 	}
 }
 
+static bool wdt_should_autostart(struct udevice *dev)
+{
+	bool autostart = IS_ENABLED(CONFIG_WATCHDOG_AUTOSTART);
+
+	if (CONFIG_IS_ENABLED(OF_CONTROL) && !CONFIG_IS_ENABLED(OF_PLATDATA)) {
+		if (dev_read_bool(dev, "u-boot,noautostart"))
+			autostart = false;
+		else if (dev_read_bool(dev, "u-boot,autostart"))
+			autostart = true;
+	}
+
+	return autostart;
+}
+
 int initr_watchdog(void)
 {
 	struct udevice *dev;
@@ -108,6 +122,14 @@ int initr_watchdog(void)
 	}
 
 	uclass_foreach_dev(dev, uc) {
+		/* Inactive watchdogs may still acquire resources during probe. */
+		if (!wdt_should_autostart(dev) &&
+		    !IS_ENABLED(CONFIG_SYSRESET_WATCHDOG_AUTO)) {
+			log_debug("WDT: deferring %s until explicitly requested\n",
+				  dev->name);
+			continue;
+		}
+
 		ret = device_probe(dev);
 		if (ret) {
 			log_debug("Error probing %s: %d\n", dev->name, ret);
@@ -239,17 +261,13 @@ static int wdt_pre_probe(struct udevice *dev)
 	 * indicated by a hw_margin_ms property.
 	 */
 	ulong reset_period = 1000;
-	bool autostart = IS_ENABLED(CONFIG_WATCHDOG_AUTOSTART);
+	bool autostart = wdt_should_autostart(dev);
 	struct wdt_priv *priv;
 
 	if (CONFIG_IS_ENABLED(OF_CONTROL) && !CONFIG_IS_ENABLED(OF_PLATDATA)) {
 		timeout = dev_read_u32_default(dev, "timeout-sec", timeout);
 		reset_period = dev_read_u32_default(dev, "hw_margin_ms",
 						    4 * reset_period) / 4;
-		if (dev_read_bool(dev, "u-boot,noautostart"))
-			autostart = false;
-		else if (dev_read_bool(dev, "u-boot,autostart"))
-			autostart = true;
 	}
 	priv = dev_get_uclass_priv(dev);
 	priv->dev = dev;

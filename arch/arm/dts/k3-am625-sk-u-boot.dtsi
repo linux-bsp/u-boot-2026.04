@@ -67,6 +67,13 @@
 	status = "disabled";
 };
 
+&main_rti0 {
+	timeout-sec = <60>;
+	hw_margin_ms = <40000>;
+	/* Start after TI-SCI and board power setup, immediately before bootm. */
+	u-boot,noautostart;
+};
+
 &usbss0 {
 	bootph-all;
 };

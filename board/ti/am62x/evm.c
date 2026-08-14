@@ -96,7 +96,8 @@ unsigned long board_spl_mmc_get_uboot_raw_sector(struct mmc *mmc,
 		.ctx = &ctx,
 	};
 	struct fw_metadata metadata;
-	u8 selected, slot;
+	u8 pending, selected, slot;
+	bool rolled_back = false;
 	int ret;
 
 	ret = fw_metadata_load(&store, &metadata);
@@ -106,9 +107,16 @@ unsigned long board_spl_mmc_get_uboot_raw_sector(struct mmc *mmc,
 	}
 
 	if (CONFIG_IS_ENABLED(FW_BOOT_SELECTOR_COMMIT)) {
+		pending = metadata.pending_deployment;
 		store.write = fw_spl_metadata_write;
 		ret = fw_metadata_select(&metadata, &selected);
+		if (ret >= 0 && pending < ARRAY_SIZE(metadata.deployment) &&
+		    metadata.pending_deployment == FW_SLOT_NONE &&
+		    metadata.deployment[pending].state == FW_STATE_FAILED &&
+		    selected != pending)
+			rolled_back = true;
 		if (ret > 0 && fw_metadata_save(&store, &metadata)) {
+			rolled_back = false;
 			printf("SPL: cannot commit fw selection, using last-good\n");
 			selected = metadata.last_good_deployment;
 			if (selected > 1 ||
@@ -118,6 +126,12 @@ unsigned long board_spl_mmc_get_uboot_raw_sector(struct mmc *mmc,
 			printf("SPL: cannot select fw deployment (%d), using slot A\n",
 			       ret);
 			return raw_sect;
+		}
+		if (rolled_back) {
+			printf("SPL: fw deployment %u exhausted boot attempts; marking failed\n",
+			       pending);
+			printf("SPL: firmware rollback: deployment %u -> last-good deployment %u\n",
+			       pending, selected);
 		}
 	} else {
 		ret = fw_metadata_get_selected(&metadata, &selected);
@@ -234,11 +248,64 @@ invalid_eeprom:
 #endif
 
 #if CONFIG_IS_ENABLED(BOARD_LATE_INIT)
+#if CONFIG_IS_ENABLED(CMD_FW)
+static void migrate_fw_environment(void)
+{
+	static const char * const fw_vars[] = {
+		"autoload",
+		"netretry",
+		"bootpretryperiod",
+		"fw_env_version",
+		"static_ipaddr",
+		"static_serverip",
+		"static_gatewayip",
+		"static_netmask",
+		"fw_rollback_test",
+		"fw_net_config",
+		"fw_start_watchdog",
+		"fw_set_bootargs",
+		"fw_boot",
+		"bootcmd",
+	};
+	char default_version[16];
+	const char *current_version;
+	int ret;
+
+	ret = env_get_default_into("fw_env_version", default_version,
+				   sizeof(default_version));
+	if (ret < 0) {
+		printf("FW env: default schema version is missing\n");
+		return;
+	}
+
+	current_version = env_get("fw_env_version");
+	if (current_version && !strcmp(current_version, default_version))
+		return;
+
+	printf("FW env: migrating schema %s -> %s\n",
+	       current_version ? current_version : "<unset>", default_version);
+	if (!env_set_default_vars(ARRAY_SIZE(fw_vars),
+				  (char * const *)fw_vars, 0)) {
+		printf("FW env: failed to import owned default variables\n");
+		return;
+	}
+
+	ret = env_save();
+	if (ret)
+		printf("FW env: save failed (%d); migration applies to this boot only\n",
+		       ret);
+}
+#endif
+
 int board_late_init(void)
 {
 #if CONFIG_IS_ENABLED(TI_I2C_BOARD_DETECT)
     setup_board_eeprom_env();
     setup_serial_am6();
+#endif
+
+#if CONFIG_IS_ENABLED(CMD_FW)
+	migrate_fw_environment();
 #endif
 
 	ti_set_fdt_env(NULL, NULL);
