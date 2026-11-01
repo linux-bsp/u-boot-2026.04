@@ -255,7 +255,6 @@ static void migrate_fw_environment(void)
 		"autoload",
 		"netretry",
 		"bootpretryperiod",
-		"fw_env_version",
 		"static_ipaddr",
 		"static_serverip",
 		"static_gatewayip",
@@ -264,8 +263,22 @@ static void migrate_fw_environment(void)
 		"fw_net_config",
 		"fw_start_watchdog",
 		"fw_set_bootargs",
+		"fw_boot_mmc",
+		"fw_load_tftp",
+		"fw_net_select",
+		"fw_set_net_bootargs",
+		"fw_boot_net",
 		"fw_boot",
 		"bootcmd",
+	};
+	static const char * const net_vars[] = {
+		"tftp_kernel",
+		"nfs_root",
+		"tftp_kernel_file",
+		"tftp_fdt_file",
+		"nfsroot",
+		"nfsopts",
+		"netdev",
 	};
 	char default_version[16];
 	const char *current_version;
@@ -287,6 +300,22 @@ static void migrate_fw_environment(void)
 	if (!env_set_default_vars(ARRAY_SIZE(fw_vars),
 				  (char * const *)fw_vars, 0)) {
 		printf("FW env: failed to import owned default variables\n");
+		return;
+	}
+
+	/* Preserve user network settings, adding only missing defaults. */
+	for (int i = 0; i < ARRAY_SIZE(net_vars); i++) {
+		if (!env_get(net_vars[i]) &&
+		    !env_set_default_vars(1, (char * const *)&net_vars[i], 0)) {
+			printf("FW env: failed to import %s\n", net_vars[i]);
+			return;
+		}
+	}
+
+	/* Mark the migration complete only after every variable is installed. */
+	ret = env_set("fw_env_version", default_version);
+	if (ret) {
+		printf("FW env: failed to update schema version (%d)\n", ret);
 		return;
 	}
 

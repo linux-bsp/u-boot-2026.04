@@ -266,6 +266,65 @@ Initialize a factory image and select boot offsets::
     fw init a
     fw select
 
+AM62x network boot switches
+---------------------------
+
+The AM62x environment provides two independent switches. Both default to zero:
+
+================= ============ ==================== ========================
+``tftp_kernel``   ``nfs_root`` Kernel source        Root filesystem
+================= ============ ==================== ========================
+0                 0            Selected eMMC FIT    Selected eMMC SquashFS
+1                 0            TFTP Image and DTB   Selected eMMC SquashFS
+0                 1            Selected eMMC FIT    NFS
+1                 1            TFTP Image and DTB   NFS
+================= ============ ==================== ========================
+
+For a temporary TFTP + NFS boot, interrupt autoboot and run::
+
+    setenv ipaddr 192.168.10.211
+    setenv serverip 192.168.10.246
+    setenv gatewayip 192.168.10.1
+    setenv netmask 255.255.255.0
+    setenv tftp_kernel 1
+    setenv nfs_root 1
+    setenv nfsroot /srv/nfs/sadboard-am625
+    run bootcmd
+
+The server must provide an uncompressed ``Image`` and
+``k3-am625-alientek.dtb`` through TFTP, and export the unpacked root filesystem
+through NFS. ``tftp_kernel_file`` and ``tftp_fdt_file`` override the TFTP paths.
+``nfsroot`` is the server-side export path, ``nfsopts`` defaults to
+``vers=3,tcp``, and ``netdev`` defaults to Linux interface ``eth0``. TFTP and NFS
+both use ``serverip``. NFS is mounted by Linux, not by the U-Boot ``nfs`` command.
+The kernel must have its network driver, IP autoconfiguration and NFS-root
+support built in.
+
+A failed kernel/DTB download stops the boot sequence without falling back to
+stale RAM or the eMMC kernel. Either mixed mode still needs valid A/B selection
+for its local component. Full TFTP + NFS bypasses ``fw select`` in U-Boot proper;
+it does not change the ROM/SPL boot source or SPL's existing slot selection.
+
+Network modes do not apply pending ``fw_confirm`` values, start the product
+watchdog, or pass ``fw.deployment``/``fw.rollback_test`` to Linux. They therefore
+do not automatically confirm a test boot as a successful product deployment.
+SPL may already have accounted for an A/B attempt before reaching U-Boot.
+Use a fresh boot if the product watchdog was started during an earlier attempt.
+
+Set both switches to ``0`` to restore the original A/B flow. Use ``saveenv``
+only when the selected settings should persist across resets. ``upk``/``upr``
+remain firmware update commands; network boot does not call them.
+
+Environment schema 3 refreshes the boot helper scripts on upgrade and fills
+missing network-switch defaults. Existing IP/MAC settings and custom network
+switches, filenames and export paths are preserved. An already-running old
+U-Boot does not gain these helpers merely by setting the switches; it needs
+the new U-Boot or the corresponding environment scripts imported first.
+
+Host regression checks (command doubles, no hardware boot)::
+
+    python3 test/py/tests/test_am62x_boot_env.py
+
 Security
 --------
 
