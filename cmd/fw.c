@@ -112,14 +112,13 @@ int fw_boot_identity_fixup(void *blob)
     fdt_delprop(blob, node, "fw,tag"); fdt_delprop(blob, node, "fw,id");
     fdt_delprop(blob, node, "fw,deployment");
     if (!boot_identity_ready || env_get_yesno("tftp_kernel") == 1 || env_get_yesno("nfs_root") == 1) return 0;
-    printf("firmware: ================ U-BOOT / BOOT IDENTITY ================\n");
-    if (!boot_identity.valid) { printf("firmware: stage=uboot identity=unknown deployment=%u\n", boot_identity_deployment); return 0; }
+    if (!boot_identity.valid) { printf("[fw] [INFO] stage=uboot identity=unknown deployment=%u\n", boot_identity_deployment); return 0; }
     char hash[65];
     for (unsigned i = 0; i < 32; i++) snprintf(hash+i*2, 3, "%02x", boot_identity.id[i]);
     ret = fdt_setprop_string(blob, node, "fw,tag", boot_identity.tag);
     if (!ret) ret = fdt_setprop_string(blob, node, "fw,id", hash);
     if (!ret) ret = fdt_setprop_u32(blob, node, "fw,deployment", boot_identity_deployment);
-    if (!ret) printf("firmware: stage=uboot tag=%s id=%.8s deployment=%u\n", boot_identity.tag, hash, boot_identity_deployment);
+    if (!ret) printf("[fw] [INFO] stage=uboot tag=%s id=%.8s deployment=%u\n", boot_identity.tag, hash, boot_identity_deployment);
     return ret;
 }
 
@@ -382,28 +381,28 @@ static int fw_write_region(const struct fw_storage *storage,
 		return -EFBIG;
 
 	if (storage->type == FW_STORAGE_SPI_NOR) {
-		printf("fw: erasing %s: size=%#llx\n", region->name,
+		printf("[fw] [INFO] erasing %s: size=%#llx\n", region->name,
 		       (unsigned long long)region->size);
 		ret = spi_flash_erase_dm(storage->sf, region->offset,
 					 region->size);
 		if (ret) {
-			printf("fw: erase failed for %s (%d)\n", region->name, ret);
+			printf("[fw] [INFO] erase failed for %s (%d)\n", region->name, ret);
 			return ret;
 		}
 	}
 
-	printf("fw: writing %s: offset=%#llx size=%zu\n", region->name,
+	printf("[fw] [INFO] writing %s: offset=%#llx size=%zu\n", region->name,
 	       (unsigned long long)region->offset, size);
 	ret = fw_storage_write(storage, region->offset, data, size);
 	if (ret) {
-		printf("fw: write failed for %s (%d)\n", region->name, ret);
+		printf("[fw] [INFO] write failed for %s (%d)\n", region->name, ret);
 		return ret;
 	}
 
-	printf("fw: verifying %s...\n", region->name);
+	printf("[fw] [INFO] verifying %s...\n", region->name);
 	verify = memalign(ARCH_DMA_MINALIGN, FW_VERIFY_CHUNK);
 	if (!verify) {
-		printf("fw: verify allocation failed for %s\n", region->name);
+		printf("[fw] [INFO] verify allocation failed for %s\n", region->name);
 		return -ENOMEM;
 	}
 	for (offset = 0; offset < size; offset += chunk) {
@@ -417,11 +416,11 @@ static int fw_write_region(const struct fw_storage *storage,
 	}
 	free(verify);
 	if (ret) {
-		printf("fw: verify failed for %s (%d)\n", region->name, ret);
+		printf("[fw] [INFO] verify failed for %s (%d)\n", region->name, ret);
 		return ret;
 	}
 
-	printf("fw: partition %s update succeeded\n", region->name);
+	printf("[fw] [INFO] partition %s update succeeded\n", region->name);
 
 	return 0;
 }
@@ -1198,7 +1197,7 @@ unmap_component:
 		unmap_sysmem(component_fit);
 		if (ret)
 			return ret;
-		printf("fw: component %s staged successfully\n",
+		printf("[fw] [INFO] component %s staged successfully\n",
 		       fw_component_name(package.component));
 	}
 
@@ -1211,8 +1210,7 @@ unmap_component:
 	if (ret)
 		return ret;
 
-	printf("fw: ================ INSTALL / READY ================\n");
-    printf("fw: release=v%u.%u.%u written; reboot and health confirmation required\n",
+    printf("[fw] [INFO] release=v%u.%u.%u written; reboot and health confirmation required\n",
            release.version >> 16, (release.version >> 8) & 255, release.version & 255);
 	printf("Deployment %u is pending (%u tries)\n", deployment,
 	       layout->attempts);
@@ -1269,7 +1267,7 @@ static int fw_load_selected_kernel(const struct fw_layout *layout,
     }
 	unmap_sysmem(fit);
 	if (!ret)
-		printf("fw: [PASS] verified kernel slot %c version v%u.%u.%u\n",
+		printf("[fw] [INFO] verified kernel slot %c version v%u.%u.%u\n",
                'a' + component->slot, package.version >> 16,
                (package.version >> 8) & 255, package.version & 255);
 	return ret;
@@ -1313,7 +1311,7 @@ static int fw_prepare_verity(const struct fw_layout *layout,
     if (!region) { ret = -EINVAL; goto out; }
     ret = fw_verity_args(dtb, dtb_size, device, region->size, args, sizeof(args));
     if (!ret) ret = env_set("fw_rootargs", args);
-    if (!ret) printf("fw: rootfs dm-verity parameters verified for %s\n", device);
+    if (!ret) printf("[fw] [INFO] rootfs dm-verity parameters verified for %s\n", device);
 out:
     unmap_sysmem(fit);
     return ret;
@@ -1366,11 +1364,11 @@ static int fw_recover_kernel(const struct fw_layout *layout,
 		return ret;
 	component = &metadata->deployment[selected].component[FW_COMPONENT_KERNEL];
 	if (!component->valid || !component->version) {
-		printf("fw: recovery needs a known kernel version in metadata\n");
+		printf("[fw] [INFO] recovery needs a known kernel version in metadata\n");
 		return -EINVAL;
 	}
 	if (!fw_load_selected_kernel(layout, storage, metadata, addr)) {
-		printf("fw: selected kernel is healthy; no repair needed\n");
+		printf("[fw] [INFO] selected kernel is healthy; no repair needed\n");
 		return 0;
 	}
 	region = fw_component_region(layout, FW_COMPONENT_KERNEL, component->slot);
@@ -1390,7 +1388,7 @@ static int fw_recover_kernel(const struct fw_layout *layout,
 	snprintf(port_text, sizeof(port_text), "%lu", port);
 	ret = env_set("httpdstp", port_text);
 	if (!ret) {
-		printf("fw: requesting exact kernel %u from %s:%lu\n",
+		printf("[fw] [INFO] requesting exact kernel %u from %s:%lu\n",
 		       component->version, server, port);
 		ret = wget_request(map_to_sysmem(buffer), uri, &info);
 	}
@@ -1412,7 +1410,7 @@ static int fw_recover_kernel(const struct fw_layout *layout,
 		ret = fw_write_region(storage, region, buffer, fit_get_size(buffer));
 	free(buffer);
 	if (!ret)
-		printf("fw: kernel recovery verified; slot %c restored\n", 'a' + component->slot);
+		printf("[fw] [INFO] kernel recovery verified; slot %c restored\n", 'a' + component->slot);
 	return ret;
 #else
 	return -ENOSYS;
@@ -1436,7 +1434,7 @@ static int do_fw(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[])
 
 	ret = fw_open(&layout, &storage, &store, &store_ctx);
 	if (ret) {
-		printf("fw: invalid or unavailable layout (%d)\n", ret);
+		printf("[fw] [INFO] invalid or unavailable layout (%d)\n", ret);
 		return CMD_RET_FAILURE;
 	}
 
@@ -1478,7 +1476,7 @@ static int do_fw(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[])
 			       'a' + layout.default_slot);
 	}
 	if (ret) {
-		printf("fw: metadata unavailable (%d); run 'fw init a|b'\n",
+		printf("[fw] [INFO] metadata unavailable (%d); run 'fw init a|b'\n",
 		       ret);
 		return CMD_RET_FAILURE;
 	}
@@ -1522,7 +1520,6 @@ static int do_fw(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[])
 				goto out;
 		}
 		fw_export_selection(&layout, &metadata, selected);
-		printf("fw: ================ U-BOOT / SELECT DEPLOYMENT ================\n");
 		printf("Selected deployment %u: boot=%c kernel=%c rootfs=%c\n",
 		       selected,
 		       'a' + metadata.deployment[selected]
@@ -1640,7 +1637,7 @@ static int do_fw(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[])
 
 out:
 	if (ret)
-		printf("fw: operation failed (%d)\n", ret);
+		printf("[fw] [INFO] operation failed (%d)\n", ret);
 	return ret ? CMD_RET_FAILURE : CMD_RET_SUCCESS;
 }
 
