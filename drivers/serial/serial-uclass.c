@@ -6,6 +6,7 @@
 #define LOG_CATEGORY UCLASS_SERIAL
 
 #include <config.h>
+#include <bsp_bootlog.h>
 #include <dm.h>
 #include <env_internal.h>
 #include <errno.h>
@@ -251,6 +252,9 @@ static void _serial_putc(struct udevice *dev, char ch)
 	if (ch == '\n')
 		_serial_putc(dev, '\r');
 
+	if (dev == gd->cur_serial_dev)
+		bsp_bootlog_write(&ch, 1);
+
 	do {
 		err = ops->putc(dev, ch);
 	} while (err == -EAGAIN);
@@ -262,6 +266,9 @@ static void _serial_putc(struct udevice *dev, char ch)
 static int __serial_puts(struct udevice *dev, const char *str, size_t len)
 {
 	struct dm_serial_ops *ops = serial_get_ops(dev);
+
+	if (dev == gd->cur_serial_dev)
+		bsp_bootlog_write(str, len);
 
 	do {
 		ssize_t written = ops->puts(dev, str, len);

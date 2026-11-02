@@ -1,3 +1,11 @@
+config BSP_BOOTLOG
+    bool "AM625 staged boot log handoff"
+    depends on SOC_K3_AM625
+    help
+      Capture R5 SPL, A53 SPL and U-Boot UART output in 64 KiB at 0x9c900000.
+      The board must reserve this DDR region in both U-Boot and Linux DTs.
+      Uses 2 KiB SRAM in R5 SPL before DDR initialization.
+
 menu "Console"
 
 config MENU

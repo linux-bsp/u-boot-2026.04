@@ -7,6 +7,7 @@
  */
 
 #include <spl.h>
+#include <bsp_bootlog.h>
 #include <asm/io.h>
 #include <asm/arch/hardware.h>
 #include <dm.h>
@@ -162,6 +163,7 @@ void board_init_f(ulong dummy)
 
 	/* Init DM early */
 	spl_early_init();
+	bsp_bootlog_init();
 
 	/*
 	 * Process pinctrl for the serial0 and serial3, aka WKUP_UART0 and
@@ -254,6 +256,7 @@ void board_init_f(ulong dummy)
 		if (ret)
 			panic("DRAM init failed: %d\n", ret);
 	}
+	bsp_bootlog_ddr_ready();
 	spl_enable_cache();
 
 	k3_fix_rproc_clock("/a53@0");
