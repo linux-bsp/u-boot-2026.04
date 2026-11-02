@@ -344,3 +344,51 @@ from that same deployment.
 The optional "auto-init" layout property initializes metadata only when both
 copies contain erased bytes. Corrupt non-empty metadata still requires an
 explicit factory recovery with "fw init".
+
+Verified kernel loading and HTTP recovery
+----------------------------------------
+
+``fw load-kernel <address>`` reads the selected kernel FIT with a bounded size,
+verifies its format, hashes and configured signature policy, and checks the
+metadata version when known. It supports the firmware manager's MMC and SPI-NOR
+storage backends. AM625 normal eMMC boot now uses this command.
+
+``fw recover-kernel`` requires CONFIG_WGET and known selected-kernel metadata.
+It first checks the stored kernel; healthy kernels are left untouched. Otherwise
+it requests the exact version from the configured OTA server::
+
+    setenv ota_serverip 192.168.10.246
+    setenv ota_serverport 8090
+    fw select
+    fw recover-kernel
+
+The endpoint is ``/recovery/<product>/<layout>/kernel/<version>/kernel.itb``.
+``ota_serverip`` defaults to ``serverip`` and the port defaults to 8090. Legacy
+HTTP temporarily uses ``httpdstp`` and restores its previous value afterwards.
+The download buffer is bounded by the kernel region size. FIT validation and
+exact component/version/rollback/build-time checks precede any write. Only the
+damaged kernel slot is repaired and read back; metadata and the other slot are
+unchanged. Retrying after interrupted recovery is possible. Physical media
+failure, missing metadata and unknown version zero require manual recovery.
+
+AM625 environment schema 5 enables this path with ``ota_recovery=1`` after
+normal kernel loading fails. Set it to zero to disable automatic recovery.
+TFTP/NFS development boot paths remain separate. A repaired kernel is loaded
+again before bootm. No repair is attempted for failures after control has passed
+to Linux. A newer U-Boot must be installed separately from kernel/rootfs OTA.
+
+Schema 5 retains the legacy MMC implementation of ``fw_load_kernel``. New
+verification uses ``fw_load_checked_kernel`` instead. Old schema 2/3 bootloaders
+may leave shared environment variables untouched when rolling back; therefore
+legacy variables must not contain commands unknown to those bootloaders.
+
+Independent rootfs recovery initramfs
+------------------------------------
+
+AM625 environment schema 7 boots a kernel FIT containing a ``recovery`` ramdisk.
+Kernel FIT verification covers kernel, FDT and a referenced ramdisk.
+``fw verity-args <FIT address> <rootfs device>`` validates the bound verity
+parameters and requires a ramdisk, then selects ``rdinit=/init``. The C PID 1
+performs full payload verification, creates dm-verity and switches root.
+Invalid metadata or a missing recovery ramdisk stops the production boot path.
+The explicit NFS debug path uses ``bootm <address> -`` to omit the ramdisk.

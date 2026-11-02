@@ -4,7 +4,7 @@
 
 #include <linux/types.h>
 
-#define FW_METADATA_SIZE 128
+#define FW_METADATA_SIZE 4096
 #define FW_METADATA_COPIES 2
 #define FW_SLOT_NONE 0xff
 #define FW_DEFAULT_ATTEMPTS 3
@@ -33,7 +33,17 @@ struct fw_component_slot {
 	u32 build_time_minutes;
 };
 
+/* Identity of kernel FIT + rootfs payload; separate from boot selection state. */
+struct fw_identity {
+    u32 valid;
+    char tag[32];
+    u8 id[32];
+    u64 size[2];
+    u8 hash[2][32];
+};
+
 struct fw_deployment {
+    struct fw_identity identity;
 	struct fw_component_slot component[FW_COMPONENT_COUNT];
 	u8 state;
 	u8 tries_remaining;
@@ -59,6 +69,7 @@ struct fw_metadata_store {
 	void *ctx;
 };
 
+int fw_boot_identity_fixup(void *blob);
 const char *fw_component_name(enum fw_component component);
 const char *fw_state_name(enum fw_deployment_state state);
 void fw_metadata_init(struct fw_metadata *metadata, u8 slot);

@@ -5,11 +5,13 @@
 #include <dm/ofnode.h>
 #include <env.h>
 #include <firmware_manager.h>
+#include <fw_verity.h>
 #include <hash.h>
 #include <hexdump.h>
 #include <image.h>
 #include <mapmem.h>
 #include <malloc.h>
+#include <net.h>
 #include <part.h>
 #include <spi_flash.h>
 #include <asm/cache.h>
@@ -90,12 +92,36 @@ struct fw_release_component {
 };
 
 struct fw_release {
+    struct fw_identity identity;
 	u32 version;
 	u32 rollback_index;
 	bool allow_bootloader;
 	int count;
 	struct fw_release_component component[FW_RELEASE_MAX_COMPONENTS];
 };
+
+static struct fw_identity boot_identity;
+static unsigned boot_identity_deployment;
+static bool boot_identity_ready;
+
+int fw_boot_identity_fixup(void *blob)
+{
+    int node = fdt_path_offset(blob, "/chosen"), ret;
+    if (node < 0) node = fdt_add_subnode(blob, 0, "chosen");
+    if (node < 0) return node;
+    fdt_delprop(blob, node, "fw,tag"); fdt_delprop(blob, node, "fw,id");
+    fdt_delprop(blob, node, "fw,deployment");
+    if (!boot_identity_ready || env_get_yesno("tftp_kernel") == 1 || env_get_yesno("nfs_root") == 1) return 0;
+    printf("firmware: ================ U-BOOT / BOOT IDENTITY ================\n");
+    if (!boot_identity.valid) { printf("firmware: stage=uboot identity=unknown deployment=%u\n", boot_identity_deployment); return 0; }
+    char hash[65];
+    for (unsigned i = 0; i < 32; i++) snprintf(hash+i*2, 3, "%02x", boot_identity.id[i]);
+    ret = fdt_setprop_string(blob, node, "fw,tag", boot_identity.tag);
+    if (!ret) ret = fdt_setprop_string(blob, node, "fw,id", hash);
+    if (!ret) ret = fdt_setprop_u32(blob, node, "fw,deployment", boot_identity_deployment);
+    if (!ret) printf("firmware: stage=uboot tag=%s id=%.8s deployment=%u\n", boot_identity.tag, hash, boot_identity_deployment);
+    return ret;
+}
 
 static const char *const fw_region_names[FW_REGION_COUNT] = {
 	"meta0",   "meta1",   "tiboot3_a", "tiboot3_b", "tispl_a",  "tispl_b",
@@ -549,6 +575,8 @@ static int fw_verify_package(const struct fw_layout *layout, const void *fit,
 		ret = fw_verify_prop(fit, conf, FIT_KERNEL_PROP);
 		if (!ret)
 			ret = fw_verify_prop(fit, conf, FIT_FDT_PROP);
+        if (!ret && fdt_getprop(fit, conf, FIT_RAMDISK_PROP, NULL))
+            ret = fw_verify_prop(fit, conf, FIT_RAMDISK_PROP);
 	} else if (package->component == FW_COMPONENT_ROOTFS) {
 		ret = fw_verify_prop(fit, conf, FIT_FIRMWARE_PROP);
 	} else {
@@ -594,6 +622,42 @@ static int fw_copy_string_prop(const void *fit, int node, const char *name,
 	memcpy(dest, value, len);
 
 	return 0;
+}
+
+static int read_release_identity(const void *fit, int conf, u32 version, struct fw_identity *identity)
+{
+    int len;
+    const char *value = fdt_getprop(fit, conf, "fw,firmware-id", &len);
+    memset(identity, 0, sizeof(*identity));
+    if (!value) return fdt_getprop(fit, conf, "fw,tag", NULL) ? -EINVAL : 0;
+    u8 *dst = identity->id;
+    if (!value || len != 65 || value[64] || hex2bin(dst, value, 32)) return -EINVAL;
+    char expected[32];
+    snprintf(expected, sizeof(expected), "v%u.%u.%u", version >> 16, (version >> 8) & 255, version & 255);
+    value = fdt_getprop(fit, conf, "fw,tag", &len);
+    if (!value || len != (int)strlen(expected) + 1 || memcmp(value, expected, len)) return -EINVAL;
+    strcpy(identity->tag, expected);
+    char hex[2][65];
+    for (unsigned i = 0; i < 2; i++) {
+        char key[48]; fdt64_t bytes;
+        snprintf(key, sizeof(key), "fw,%s-payload-bytes", i ? "rootfs" : "kernel");
+        const void *raw = fdt_getprop(fit, conf, key, &len);
+        if (!raw || len != 8) return -EINVAL;
+        memcpy(&bytes, raw, 8); identity->size[i] = fdt64_to_cpu(bytes);
+        if (!identity->size[i] || identity->size[i] > 512ULL*1024*1024) return -EINVAL;
+        snprintf(key, sizeof(key), "fw,%s-payload-sha256", i ? "rootfs" : "kernel");
+        value = fdt_getprop(fit, conf, key, &len); dst = identity->hash[i];
+        if (!value || len != 65 || value[64] || hex2bin(dst, value, 32)) return -EINVAL;
+        for (unsigned j = 0; j < 32; j++) snprintf(hex[i]+j*2, 3, "%02x", dst[j]);
+    }
+    char canonical[256]; u8 digest[32];
+    int n = snprintf(canonical, sizeof(canonical), "BSPFWCONTENT1\nkernel %llu %s\nrootfs %llu %s\n",
+        (unsigned long long)identity->size[0], hex[0], (unsigned long long)identity->size[1], hex[1]);
+    if (n < 0 || n >= (int)sizeof(canonical)) return -EINVAL;
+    int digest_size = 32;
+    if (hash_block("sha256", canonical, n, digest, &digest_size) || digest_size != 32) return -EIO;
+    if (memcmp(identity->id, digest, 32)) return -EBADMSG;
+    identity->valid = 1; return 0;
 }
 
 static int fw_verify_release(const struct fw_layout *layout, const void *fit,
@@ -672,8 +736,8 @@ static int fw_verify_release(const struct fw_layout *layout, const void *fit,
 			return -EINVAL;
 	}
 	release->count = count;
-
-	return 0;
+    if ((seen & 6) != 6 && fdt_getprop(fit, conf, "fw,firmware-id", NULL)) return -EINVAL;
+    return read_release_identity(fit, conf, release->version, &release->identity);
 }
 
 static const struct fw_region *
@@ -901,6 +965,12 @@ static void fw_print_metadata(const struct fw_metadata *metadata)
 		printf("deployment %d: %s successful=%u tries=%u\n", i,
 		       fw_state_name(deployment->state), deployment->successful,
 		       deployment->tries_remaining);
+        if (deployment->identity.valid) {
+            char id[65];
+            for (unsigned k = 0; k < 32; k++)
+                snprintf(id + k * 2, 3, "%02x", deployment->identity.id[k]);
+            printf("  firmware tag=%s id=%.8s\n", deployment->identity.tag, id);
+        }
 		for (j = 0; j < FW_COMPONENT_COUNT; j++) {
 			const struct fw_component_slot *component =
 				&deployment->component[j];
@@ -1103,6 +1173,23 @@ static int fw_update_release(const struct fw_layout *layout,
 			ret = -EPERM;
 			goto unmap_component;
 		}
+        if (release.identity.valid && package.component != FW_COMPONENT_BOOTLOADER) {
+            if (package.version != release.version) {
+                ret = -EBADMSG;
+                goto unmap_component;
+            }
+            const void *data = component_fit; size_t bytes = fdt_totalsize(component_fit);
+            unsigned index = package.component == FW_COMPONENT_ROOTFS;
+            if (index) {
+                ret = fw_fit_data(component_fit, package.conf_noffset, "firmware", 0, &data, &bytes, NULL);
+                if (ret) goto unmap_component;
+            }
+            digest_size = 32;
+            ret = hash_block("sha256", data, bytes, digest, &digest_size);
+            if (ret || bytes != release.identity.size[index] || memcmp(digest, release.identity.hash[index], 32)) {
+                ret = -EBADMSG; goto unmap_component;
+            }
+        }
 		ret = fw_write_package(layout, storage, &metadata, &package,
 				       component_fit, component_size, deployment,
 				       NULL);
@@ -1115,6 +1202,7 @@ unmap_component:
 		       fw_component_name(package.component));
 	}
 
+    metadata.deployment[deployment].identity = release.identity;
 	ret = fw_metadata_commit_release(&metadata, deployment,
 					 layout->attempts);
 	if (ret)
@@ -1123,10 +1211,212 @@ unmap_component:
 	if (ret)
 		return ret;
 
-	printf("Firmware upgrade succeeded: release %u\n", release.version);
+	printf("fw: ================ INSTALL / READY ================\n");
+    printf("fw: release=v%u.%u.%u written; reboot and health confirmation required\n",
+           release.version >> 16, (release.version >> 8) & 255, release.version & 255);
 	printf("Deployment %u is pending (%u tries)\n", deployment,
 	       layout->attempts);
 	return 0;
+}
+
+/* Load only a bounded, verified FIT from the selected deployment. */
+static int fw_load_selected_kernel(const struct fw_layout *layout,
+				   const struct fw_storage *storage,
+				   const struct fw_metadata *metadata,
+				   ulong addr)
+{
+	const struct fw_component_slot *component;
+	const struct fw_region *region;
+	struct fdt_header header;
+	struct fw_package package;
+	void *fit;
+	size_t size;
+	u8 selected;
+	int ret = fw_metadata_get_selected(metadata, &selected);
+
+    boot_identity_ready = false;
+	if (ret)
+		return ret;
+	component = &metadata->deployment[selected].component[FW_COMPONENT_KERNEL];
+	region = fw_component_region(layout, FW_COMPONENT_KERNEL, component->slot);
+	if (!region || !component->valid)
+		return -EINVAL;
+	ret = fw_storage_read(storage, region->offset, &header, sizeof(header));
+	if (ret)
+		return ret;
+	if (fdt_check_header(&header))
+		return -EBADMSG;
+	size = fdt_totalsize(&header);
+	if (size < sizeof(header) || size > region->size || addr > ULONG_MAX - size)
+		return -EFBIG;
+	fit = map_sysmem(addr, size);
+	ret = fw_storage_read(storage, region->offset, fit, size);
+	if (!ret)
+		ret = fw_verify_package(layout, fit, size, &package);
+	if (!ret && (package.component != FW_COMPONENT_KERNEL ||
+	    (component->version && package.version != component->version) ||
+	    package.rollback_index < component->rollback_index))
+		ret = -EPERM;
+    if (!ret && metadata->deployment[selected].identity.valid) {
+        const struct fw_identity *identity = &metadata->deployment[selected].identity;
+        u8 digest[32]; int length = 32;
+        ret = hash_block("sha256", fit, size, digest, &length);
+        if (!ret && (size != identity->size[0] || memcmp(digest, identity->hash[0], 32))) ret = -EBADMSG;
+    }
+    if (!ret) {
+        boot_identity = metadata->deployment[selected].identity;
+        boot_identity_deployment = selected; boot_identity_ready = true;
+    }
+	unmap_sysmem(fit);
+	if (!ret)
+		printf("fw: [PASS] verified kernel slot %c version v%u.%u.%u\n",
+               'a' + component->slot, package.version >> 16,
+               (package.version >> 8) & 255, package.version & 255);
+	return ret;
+}
+
+/* Select the current rootfs slot but bind its expected contents to the kernel
+ * FIT, so a mismatched kernel/rootfs pair fails at the dm-verity boundary. */
+static int fw_prepare_verity(const struct fw_layout *layout,
+                             const struct fw_metadata *metadata,
+                             ulong addr, const char *device)
+{
+    const struct fw_region *region;
+    struct fw_package package;
+    const void *dtb;
+    void *fit;
+    size_t dtb_size, size;
+    char args[768];
+    u8 selected;
+    int conf, node, ret;
+    env_set("fw_rootargs", NULL);
+    ret = fw_metadata_get_selected(metadata, &selected);
+    if (ret) return ret;
+    region = fw_component_region(layout, FW_COMPONENT_KERNEL,
+        metadata->deployment[selected].component[FW_COMPONENT_KERNEL].slot);
+    if (!region) return -EINVAL;
+    fit = map_sysmem(addr, 0);
+    if (fdt_check_header(fit)) { ret = -EBADMSG; goto out; }
+    size = fdt_totalsize(fit);
+    if (size > region->size) { ret = -EFBIG; goto out; }
+    ret = fw_verify_package(layout, fit, size, &package);
+    if (ret) goto out;
+    if (package.component != FW_COMPONENT_KERNEL) { ret = -EINVAL; goto out; }
+    conf = fit_conf_get_node(fit, NULL);
+    node = fit_conf_get_prop_node_index(fit, conf, "fdt", 0);
+    if (node < 0) { ret = node; goto out; }
+    if (!fdt_getprop(fit, conf, FIT_RAMDISK_PROP, NULL)) { ret = -ENOENT; goto out; }
+    ret = fit_image_get_data(fit, node, &dtb, &dtb_size);
+    if (ret) goto out;
+    region = fw_component_region(layout, FW_COMPONENT_ROOTFS,
+        metadata->deployment[selected].component[FW_COMPONENT_ROOTFS].slot);
+    if (!region) { ret = -EINVAL; goto out; }
+    ret = fw_verity_args(dtb, dtb_size, device, region->size, args, sizeof(args));
+    if (!ret) ret = env_set("fw_rootargs", args);
+    if (!ret) printf("fw: rootfs dm-verity parameters verified for %s\n", device);
+out:
+    unmap_sysmem(fit);
+    return ret;
+}
+
+static bool __maybe_unused fw_identifier_valid(const char *id)
+{
+	if (!id || !*id || strlen(id) > 63)
+		return false;
+	for (; *id; id++)
+		if (!isalnum(*id) && !strchr("._-", *id))
+			return false;
+	return true;
+}
+
+/* Repair the damaged slot with its exact version; leave metadata/rootfs intact.
+ * A failed or interrupted write can be retried on the next boot. Never write
+ * the other slot, which may be the only valid rollback deployment.
+ */
+static int fw_recover_kernel(const struct fw_layout *layout,
+			     const struct fw_storage *storage,
+			     const struct fw_metadata *metadata)
+{
+#if IS_ENABLED(CONFIG_WGET)
+	const struct fw_component_slot *component;
+	const struct fw_region *region;
+	struct fw_package package;
+	struct wget_http_info info = {
+		.method = WGET_HTTP_METHOD_GET,
+		.check_buffer_size = true,
+	};
+	struct wget_http_info *old_info = wget_info;
+	const char *server = env_get("ota_serverip");
+	const char *old_port = env_get("httpdstp");
+	char *saved_port;
+	char uri[384], port_text[8];
+	ulong port = env_get_ulong("ota_serverport", 10, 8090);
+	ulong addr = env_get_hex("kernel_addr_r", image_load_addr);
+	void *buffer;
+	u8 selected;
+	int ret;
+
+	if (!server || !*server)
+		server = env_get("serverip");
+	if (!server || !string_to_ip(server).s_addr || !port || port > 65535 ||
+	    !fw_identifier_valid(layout->product) || !fw_identifier_valid(layout->layout_id))
+		return -EINVAL;
+	ret = fw_metadata_get_selected(metadata, &selected);
+	if (ret)
+		return ret;
+	component = &metadata->deployment[selected].component[FW_COMPONENT_KERNEL];
+	if (!component->valid || !component->version) {
+		printf("fw: recovery needs a known kernel version in metadata\n");
+		return -EINVAL;
+	}
+	if (!fw_load_selected_kernel(layout, storage, metadata, addr)) {
+		printf("fw: selected kernel is healthy; no repair needed\n");
+		return 0;
+	}
+	region = fw_component_region(layout, FW_COMPONENT_KERNEL, component->slot);
+	if (!region || region->size > SIZE_MAX)
+		return -EFBIG;
+	buffer = memalign(ARCH_DMA_MINALIGN, region->size);
+	if (!buffer)
+		return -ENOMEM;
+	info.buffer_size = region->size;
+	snprintf(uri, sizeof(uri), "http://%s/recovery/%s/%s/kernel/%u/kernel.itb",
+		 server, layout->product, layout->layout_id, component->version);
+	saved_port = old_port ? strdup(old_port) : NULL;
+	if (old_port && !saved_port) {
+		free(buffer);
+		return -ENOMEM;
+	}
+	snprintf(port_text, sizeof(port_text), "%lu", port);
+	ret = env_set("httpdstp", port_text);
+	if (!ret) {
+		printf("fw: requesting exact kernel %u from %s:%lu\n",
+		       component->version, server, port);
+		ret = wget_request(map_to_sysmem(buffer), uri, &info);
+	}
+	wget_info = old_info;
+	env_set("httpdstp", saved_port);
+	free(saved_port);
+	if (!ret && (info.status_code != 200 || !info.file_size ||
+	    info.file_size > region->size))
+		ret = -EIO;
+	if (!ret)
+		ret = fw_verify_package(layout, buffer, info.file_size, &package);
+	if (!ret && (package.component != FW_COMPONENT_KERNEL ||
+	    package.version != component->version ||
+	    package.rollback_index != component->rollback_index ||
+	    (component->build_time_minutes &&
+	     package.build_time_minutes != component->build_time_minutes)))
+		ret = -EPERM;
+	if (!ret)
+		ret = fw_write_region(storage, region, buffer, fit_get_size(buffer));
+	free(buffer);
+	if (!ret)
+		printf("fw: kernel recovery verified; slot %c restored\n", 'a' + component->slot);
+	return ret;
+#else
+	return -ENOSYS;
+#endif
 }
 
 static int do_fw(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[])
@@ -1193,6 +1483,27 @@ static int do_fw(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[])
 		return CMD_RET_FAILURE;
 	}
 
+    if (!strcmp(argv[1], "verity-args")) {
+        ulong addr;
+        if (argc != 4 || strict_strtoul(argv[2], 16, &addr)) return CMD_RET_USAGE;
+        ret = fw_prepare_verity(&layout, &metadata, addr, argv[3]);
+        goto out;
+    }
+	if (!strcmp(argv[1], "load-kernel")) {
+		ulong addr;
+
+		if (argc != 3 || strict_strtoul(argv[2], 16, &addr))
+			return CMD_RET_USAGE;
+		ret = fw_load_selected_kernel(&layout, &storage, &metadata, addr);
+		goto out;
+	}
+	if (!strcmp(argv[1], "recover-kernel")) {
+		if (argc != 2)
+			return CMD_RET_USAGE;
+		ret = fw_recover_kernel(&layout, &storage, &metadata);
+		goto out;
+	}
+
 	if (!strcmp(argv[1], "status")) {
 		fw_print_metadata(&metadata);
 		return CMD_RET_SUCCESS;
@@ -1211,6 +1522,7 @@ static int do_fw(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[])
 				goto out;
 		}
 		fw_export_selection(&layout, &metadata, selected);
+		printf("fw: ================ U-BOOT / SELECT DEPLOYMENT ================\n");
 		printf("Selected deployment %u: boot=%c kernel=%c rootfs=%c\n",
 		       selected,
 		       'a' + metadata.deployment[selected]
@@ -1334,6 +1646,9 @@ out:
 
 U_BOOT_LONGHELP(fw, "list\n"
 		    "fw status\n"
+		    "fw load-kernel <address>\n"
+            "fw verity-args <kernel-fit-address> <rootfs-device>\n"
+		    "fw recover-kernel\n"
 		    "fw init <a|b>\n"
 		    "fw verify <tftp file|addr address size>\n"
 		    "fw update <tftp file|addr address size>\n"

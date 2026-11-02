@@ -33,6 +33,23 @@ setenv() { local name="$1"; shift; if test "$#" = 0; then unset "$name"; else pr
 setexpr() { local name="$1"; shift; printf -v "$name" '%d' "$(( $* ))"; }
 fw() {
     echo "CMD:fw $*"
+    if test "${LEGACY_FW:-0}" = 1; then
+        case "$1" in load-kernel|recover-kernel) return 1;; esac
+    fi
+    if test "$1" = load-kernel; then
+        case "$FAIL" in
+            kernel-read|recovery) test "${REPAIRED:-0}" = 1 || return 1;;
+            kernel-persistent) return 1;;
+        esac
+    fi
+    if test "$1" = verity-args; then
+        test "$FAIL" != verity || return 1
+        fw_rootargs="root=/dev/ram0 rdinit=/init fw.rootdev=$3 fw.verity=1"
+    fi
+    if test "$1" = recover-kernel; then
+        test "$FAIL" != recovery || return 1
+        REPAIRED=1
+    fi
     if test "$1" = select; then
         test "$FAIL" != select || return 1
         fw_rootfs_slot=b; fw_deployment=1; fw_kernel_offset=0x1000000; fw_kernel_size=0x1800000
@@ -71,18 +88,29 @@ class BootEnvironment(unittest.TestCase):
                 self.assertIn('RESULT:0', out)
                 self.assertIn('BOOTI:' if tftp == '1' else 'BOOTM:', out)
                 self.assertEqual('CMD:tftp' in out, tftp == '1')
-                self.assertEqual('CMD:mmc read' in out, tftp == '0')
+                self.assertEqual('CMD:fw load-kernel' in out, (tftp, nfs) == ('0', '0'))
+                self.assertEqual('CMD:mmc read' in out, (tftp, nfs) == ('0', '1'))
                 self.assertEqual('CMD:fw select' in out, (tftp, nfs) != ('1', '1'))
+                if tftp == '0' and nfs == '1':
+                    self.assertIn('BOOTM:0x90000000 -', out)
                 if nfs == '1':
                     self.assertIn('root=/dev/nfs rw', out)
                     self.assertIn('nfsroot=192.168.10.246:/srv/nfs/sadboard-am625,vers=3,tcp', out)
                     self.assertIn('ip=192.168.10.211:192.168.10.246:192.168.10.1:255.255.255.0:am625:eth0:off', out)
                     self.assertNotIn('rootfstype=squashfs', out)
-                else:
+                elif tftp == '1':
                     self.assertIn('root=/dev/mmcblk1p14 rootfstype=squashfs ro rootwait', out)
+                else:
+                    self.assertIn('root=/dev/ram0 rdinit=/init fw.rootdev=/dev/mmcblk1p14', out)
+                    self.assertIn('rootfstype=squashfs ro rootwait panic=5', out)
                 product = (tftp, nfs) == ('0', '0')
                 for marker in ['CMD:fw mark-good', 'CMD:saveenv', 'CMD:wdt start', 'fw.deployment=1']:
                     self.assertEqual(marker in out, product, marker)
+
+    def test_invalid_verity_metadata_blocks_boot(self):
+        out = self.boot('0', '0', fail='verity')
+        self.assertIn('RESULT:1', out)
+        self.assertNotIn('BOOTM:', out)
 
     def test_missing_flags_preserve_product_boot(self):
         out = self.boot('', '')
@@ -118,6 +146,40 @@ class BootEnvironment(unittest.TestCase):
 
     def test_full_network_boot_does_not_require_selection(self):
         self.assertIn('BOOTI:', self.boot('1', '1', fail='select'))
+
+    def test_kernel_failure_requests_one_repair(self):
+        out = self.boot('0', '0', fail='kernel-read')
+        self.assertEqual(out.count('CMD:fw recover-kernel'), 1)
+        self.assertEqual(out.count('CMD:fw load-kernel'), 2)
+        self.assertIn('BOOTM:', out)
+        for failure in ('recovery', 'kernel-persistent'):
+            out = self.boot('0', '0', fail=failure)
+            self.assertEqual(out.count('CMD:fw recover-kernel'), 1)
+            self.assertNotIn('BOOTM:', out)
+            self.assertIn('RESULT:1', out)
+
+    def test_recovery_disabled_and_network_boot_do_not_repair(self):
+        out = self.boot('0', '0', fail='kernel-read', ota_recovery='0')
+        self.assertNotIn('CMD:fw recover-kernel', out)
+        self.assertNotIn('BOOTM:', out)
+        out = self.boot('0', '1', fail='mmc-read')
+        self.assertNotIn('CMD:fw recover-kernel', out)
+        self.assertNotIn('BOOTM:', out)
+
+    def test_rollback_to_legacy_bootloader_uses_compatible_loader(self):
+        # Old schema 2 imports fw_boot, but leaves fw_load_kernel untouched.
+        legacy_chain = ('run fw_apply_confirm && run fw_start_watchdog && fw select && '
+                        'run fw_set_root && run fw_set_bootargs && run fw_load_kernel && '
+                        'bootm ${kernel_addr_r}')
+        for overrides in ({'fw_boot': legacy_chain, 'fw_env_version': '2'},
+                          {'fw_boot_mmc': legacy_chain, 'fw_env_version': '3'}):
+            with self.subTest(schema=overrides['fw_env_version']):
+                out = self.boot('0', '0', LEGACY_FW='1', **overrides)
+                self.assertIn('CMD:mmc read', out)
+                self.assertIn('BOOTM:', out)
+                self.assertIn('RESULT:0', out)
+                self.assertNotIn('CMD:fw load-kernel', out)
+                self.assertNotIn('CMD:fw recover-kernel', out)
 
     def test_compiled_environment_migration(self):
         source = (BOARD / 'evm.c').read_text()
@@ -169,8 +231,10 @@ int main(void) {
     env_set("gatewayip", "192.168.10.1"); env_set("netmask", "255.255.255.0");
     env_set("ethaddr", "1c:63:49:22:c4:f7");
     env_set("tftp_kernel", "1"); env_set("nfsroot", "/custom/root");
+    env_set("ota_serverip", "192.168.10.250"); env_set("ota_serverport", "8091");
+    env_set("ota_recovery", "0");
     migrate_fw_environment();
-    assert(!strcmp(env_get("fw_env_version"), "3") && saves == 1);
+    assert(!strcmp(env_get("fw_env_version"), "7") && saves == 1);
     assert(!strcmp(env_get("ipaddr"), "192.168.10.211"));
     assert(!strcmp(env_get("serverip"), "192.168.10.246"));
     assert(!strcmp(env_get("gatewayip"), "192.168.10.1"));
@@ -178,6 +242,12 @@ int main(void) {
     assert(!strcmp(env_get("ethaddr"), "1c:63:49:22:c4:f7"));
     assert(!strcmp(env_get("tftp_kernel"), "1"));
     assert(!strcmp(env_get("nfsroot"), "/custom/root"));
+    assert(!strcmp(env_get("ota_serverip"), "192.168.10.250"));
+    assert(!strcmp(env_get("ota_serverport"), "8091"));
+    assert(!strcmp(env_get("ota_recovery"), "0"));
+    assert(strstr(env_get("fw_load_kernel"), "mmc read"));
+    assert(!strstr(env_get("fw_load_kernel"), "fw load-kernel"));
+    assert(!strcmp(env_get("fw_load_checked_kernel"), "fw load-kernel ${kernel_addr_r}"));
     assert(!strcmp(env_get("nfs_root"), "0"));
     assert(!strcmp(env_get("tftp_kernel_file"), "Image"));
     assert(!strcmp(env_get("fw_boot"), lookup(factory, ARRAY_SIZE(factory), "fw_boot")));
@@ -186,7 +256,7 @@ int main(void) {
     migrate_fw_environment();
     assert(!strcmp(env_get("fw_env_version"), "2") && saves == 0);
     fail_import = NULL; migrate_fw_environment();
-    assert(!strcmp(env_get("fw_env_version"), "3") && saves == 1);
+    assert(!strcmp(env_get("fw_env_version"), "7") && saves == 1);
     assert(!strcmp(env_get("tftp_kernel"), "0"));
     assert(!strcmp(env_get("nfs_root"), "0"));
     return 0;

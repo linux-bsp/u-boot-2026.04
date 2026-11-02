@@ -50,41 +50,43 @@ static ulong fw_spl_metadata_offset(unsigned int copy)
 }
 
 static int fw_spl_metadata_read(void *ctx, unsigned int copy, void *buf,
-				size_t len)
+                                size_t len)
 {
-	ALLOC_CACHE_ALIGN_BUFFER(u8, block, MMC_MAX_BLOCK_LEN);
-	struct fw_spl_store_ctx *store = ctx;
-	ulong offset = fw_spl_metadata_offset(copy);
+    ALLOC_CACHE_ALIGN_BUFFER(u8, block, MMC_MAX_BLOCK_LEN);
+    struct fw_spl_store_ctx *store = ctx;
+    ulong offset = fw_spl_metadata_offset(copy);
+    ulong bytes = store->blk->blksz;
 
-	if (copy >= FW_METADATA_COPIES || len > store->blk->blksz ||
-	    store->blk->blksz > MMC_MAX_BLOCK_LEN ||
-	    offset % store->blk->blksz)
-		return -EINVAL;
-	if (blk_dread(store->blk, offset / store->blk->blksz, 1, block) != 1)
-		return -EIO;
-
-	memcpy(buf, block, len);
-	return 0;
+    if (copy >= FW_METADATA_COPIES || !bytes || !len ||
+        len > FW_METADATA_SIZE || len % bytes ||
+        bytes > MMC_MAX_BLOCK_LEN || offset % bytes)
+        return -EINVAL;
+    for (size_t pos = 0; pos < len; pos += bytes) {
+        if (blk_dread(store->blk, (offset + pos) / bytes, 1, block) != 1)
+            return -EIO;
+        memcpy((u8 *)buf + pos, block, bytes);
+    }
+    return 0;
 }
 
 static int fw_spl_metadata_write(void *ctx, unsigned int copy, const void *buf,
-				 size_t len)
+                                 size_t len)
 {
-	ALLOC_CACHE_ALIGN_BUFFER(u8, block, MMC_MAX_BLOCK_LEN);
-	struct fw_spl_store_ctx *store = ctx;
-	ulong offset = fw_spl_metadata_offset(copy);
+    ALLOC_CACHE_ALIGN_BUFFER(u8, block, MMC_MAX_BLOCK_LEN);
+    struct fw_spl_store_ctx *store = ctx;
+    ulong offset = fw_spl_metadata_offset(copy);
+    ulong bytes = store->blk->blksz;
 
-	if (copy >= FW_METADATA_COPIES || len > store->blk->blksz ||
-	    store->blk->blksz > MMC_MAX_BLOCK_LEN ||
-	    offset % store->blk->blksz)
-		return -EINVAL;
-
-	memset(block, 0xff, store->blk->blksz);
-	memcpy(block, buf, len);
-	if (blk_dwrite(store->blk, offset / store->blk->blksz, 1, block) != 1)
-		return -EIO;
-
-	return 0;
+    if (copy >= FW_METADATA_COPIES || !bytes || !len ||
+        len > FW_METADATA_SIZE || len % bytes ||
+        bytes > MMC_MAX_BLOCK_LEN || offset % bytes)
+        return -EINVAL;
+    for (size_t pos = 0; pos < len; pos += bytes) {
+        memcpy(block, (const u8 *)buf + pos, bytes);
+        if (blk_dwrite(store->blk, (offset + pos) / bytes, 1, block) != 1)
+            return -EIO;
+    }
+    return 0;
 }
 
 unsigned long board_spl_mmc_get_uboot_raw_sector(struct mmc *mmc,
@@ -264,6 +266,10 @@ static void migrate_fw_environment(void)
 		"fw_start_watchdog",
 		"fw_set_bootargs",
 		"fw_boot_mmc",
+		"fw_load_kernel",
+		"fw_load_checked_kernel",
+		"fw_recover_kernel",
+		"fw_load_or_recover",
 		"fw_load_tftp",
 		"fw_net_select",
 		"fw_set_net_bootargs",
@@ -272,6 +278,8 @@ static void migrate_fw_environment(void)
 		"bootcmd",
 	};
 	static const char * const net_vars[] = {
+		"ota_recovery",
+		"ota_serverport",
 		"tftp_kernel",
 		"nfs_root",
 		"tftp_kernel_file",
@@ -369,6 +377,11 @@ void spl_perform_board_fixups(struct spl_image_info *spl_image)
 int ft_board_setup(void *blob, struct bd_info *bd)
 {
 	int ret = -1;
+    if (IS_ENABLED(CONFIG_CMD_FW)) {
+        ret = fw_boot_identity_fixup(blob);
+        if (ret) return ret;
+    }
+    ret = -1;
 
 	if (IS_ENABLED(CONFIG_FDT_SIMPLEFB))
 		ret = fdt_simplefb_enable_and_mem_rsv(blob);

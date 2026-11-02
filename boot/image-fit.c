@@ -224,7 +224,14 @@ static void fit_image_print_data(const void *fit, int noffset, const char *p,
 	if (ret) {
 		printf("unavailable\n");
 	} else {
-		for (i = 0; i < value_len; i++)
+		int print_len = value_len;
+
+#ifndef USE_HOSTCC
+		/* Abbreviate target boot logs; keep verification and host tools intact. */
+		if (!strcmp(type, "Hash") && print_len > 4)
+			print_len = 4;
+#endif
+		for (i = 0; i < print_len; i++)
 			printf("%02x", value[i]);
 		printf("\n");
 	}

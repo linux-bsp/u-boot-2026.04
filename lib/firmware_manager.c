@@ -27,6 +27,14 @@ struct fw_disk_deployment {
 	__le32 release_version;
 } __packed;
 
+struct fw_disk_identity {
+    __le32 valid;
+    char tag[32];
+    u8 id[32];
+    __le64 size[2];
+    u8 hash[2][32];
+} __attribute__((packed));
+
 struct fw_disk_metadata {
 	__le32 magic;
 	__le16 format_version;
@@ -42,6 +50,10 @@ struct fw_disk_metadata {
 	struct fw_disk_deployment deployment[2];
 	u8 reserved1[16];
 	__le32 crc32;
+    __le32 identity_magic;
+    struct fw_disk_identity identity[2];
+    u8 identity_reserved[3664];
+    __le32 identity_crc32;
 } __packed;
 
 static_assert(sizeof(struct fw_disk_metadata) == FW_METADATA_SIZE);
@@ -120,7 +132,7 @@ static int fw_metadata_decode(const void *buf, struct fw_metadata *metadata)
 
 	if (le32_to_cpu(disk->magic) != FW_METADATA_MAGIC ||
 	    le16_to_cpu(disk->format_version) != FW_METADATA_VERSION ||
-	    le16_to_cpu(disk->header_size) != FW_METADATA_SIZE)
+	    le16_to_cpu(disk->header_size) != 128U)
 		return -EINVAL;
 
 	expected_crc = le32_to_cpu(disk->crc32);
@@ -128,6 +140,14 @@ static int fw_metadata_decode(const void *buf, struct fw_metadata *metadata)
 	if (actual_crc != expected_crc)
 		return -EBADMSG;
 
+    /* New records require the extension even when a torn write leaves it erased. */
+    if ((disk->reserved0[0] || disk->reserved0[1]) &&
+        (disk->reserved0[0] != 'I' || disk->reserved0[1] != 'D' ||
+         le32_to_cpu(disk->identity_magic) != 0x31444946U))
+        return -EBADMSG;
+    if (le32_to_cpu(disk->identity_magic) == 0x31444946U) {
+        if (le32_to_cpu(disk->identity_crc32) != crc32(0, buf, offsetof(struct fw_disk_metadata, identity_crc32))) return -EBADMSG;
+    } else if (le32_to_cpu(disk->identity_magic) != 0 && le32_to_cpu(disk->identity_magic) != 0xffffffffU) return -EBADMSG;
 	memset(metadata, 0, sizeof(*metadata));
 	metadata->sequence = le32_to_cpu(disk->sequence);
 	metadata->active_deployment = disk->active_deployment;
@@ -143,6 +163,16 @@ static int fw_metadata_decode(const void *buf, struct fw_metadata *metadata)
 		struct fw_deployment *dst = &metadata->deployment[i];
 		const struct fw_disk_deployment *src = &disk->deployment[i];
 
+        if (le32_to_cpu(disk->identity_magic) == 0x31444946U) {
+            const struct fw_disk_identity *identity = &disk->identity[i];
+            dst->identity.valid = le32_to_cpu(identity->valid);
+            if (dst->identity.valid > 1 || (dst->identity.valid && !memchr(identity->tag, 0, sizeof(identity->tag)))) return -EINVAL;
+            memcpy(dst->identity.tag, identity->tag, 32);
+            memcpy(dst->identity.id, identity->id, 32);
+            memcpy(dst->identity.hash, identity->hash, 64);
+            dst->identity.size[0] = le64_to_cpu(identity->size[0]);
+            dst->identity.size[1] = le64_to_cpu(identity->size[1]);
+        }
 		dst->state = src->state;
 		dst->tries_remaining = src->tries_remaining;
 		dst->successful = src->successful;
@@ -184,7 +214,7 @@ static void fw_metadata_encode(const struct fw_metadata *metadata, void *buf)
 	memset(disk, 0, sizeof(*disk));
 	disk->magic = cpu_to_le32(FW_METADATA_MAGIC);
 	disk->format_version = cpu_to_le16(FW_METADATA_VERSION);
-	disk->header_size = cpu_to_le16(FW_METADATA_SIZE);
+	disk->header_size = cpu_to_le16(128U);
 	disk->sequence = cpu_to_le32(metadata->sequence);
 	disk->active_deployment = metadata->active_deployment;
 	disk->pending_deployment = metadata->pending_deployment;
@@ -192,11 +222,19 @@ static void fw_metadata_encode(const struct fw_metadata *metadata, void *buf)
 	disk->boot_once_deployment = metadata->boot_once_deployment;
 	disk->selected_deployment = metadata->selected_deployment;
 	disk->update_state = metadata->update_state;
+    disk->reserved0[0] = 'I';
+    disk->reserved0[1] = 'D';
 
 	for (i = 0; i < 2; i++) {
 		const struct fw_deployment *src = &metadata->deployment[i];
 		struct fw_disk_deployment *dst = &disk->deployment[i];
 
+        disk->identity[i].valid = cpu_to_le32(src->identity.valid);
+        memcpy(disk->identity[i].tag, src->identity.tag, 32);
+        memcpy(disk->identity[i].id, src->identity.id, 32);
+        memcpy(disk->identity[i].hash, src->identity.hash, 64);
+        disk->identity[i].size[0] = cpu_to_le64(src->identity.size[0]);
+        disk->identity[i].size[1] = cpu_to_le64(src->identity.size[1]);
 		dst->state = src->state;
 		dst->tries_remaining = src->tries_remaining;
 		dst->successful = src->successful;
@@ -219,6 +257,8 @@ static void fw_metadata_encode(const struct fw_metadata *metadata, void *buf)
 
 	crc = crc32(0, buf, offsetof(struct fw_disk_metadata, crc32));
 	disk->crc32 = cpu_to_le32(crc);
+    disk->identity_magic = cpu_to_le32(0x31444946U);
+    disk->identity_crc32 = cpu_to_le32(crc32(0, buf, offsetof(struct fw_disk_metadata, identity_crc32)));
 }
 
 static bool fw_sequence_newer(u32 lhs, u32 rhs)
@@ -255,7 +295,7 @@ int fw_metadata_save(const struct fw_metadata_store *store,
 		     struct fw_metadata *metadata)
 {
 	struct fw_metadata check;
-	u8 buf[FW_METADATA_SIZE], verify[FW_METADATA_SIZE];
+	u8 buf[FW_METADATA_SIZE];
 	unsigned int target = 1 - metadata->source_copy;
 	int ret;
 
@@ -265,10 +305,10 @@ int fw_metadata_save(const struct fw_metadata_store *store,
 	if (ret)
 		goto restore_sequence;
 
-	ret = store->read(store->ctx, target, verify, sizeof(verify));
+	ret = store->read(store->ctx, target, buf, sizeof(buf));
 	if (ret)
 		goto restore_sequence;
-	ret = fw_metadata_decode(verify, &check);
+	ret = fw_metadata_decode(buf, &check);
 	if (ret || check.sequence != metadata->sequence) {
 		ret = ret ?: -EIO;
 		goto restore_sequence;
@@ -387,6 +427,8 @@ int fw_metadata_prepare_update(struct fw_metadata *metadata,
 	target->component[component].rollback_index = rollback_index;
 	target->component[component].build_time_minutes = build_time_minutes;
 	target->state = FW_STATE_READY;
+	if (component != FW_COMPONENT_BOOTLOADER)
+		target->identity.valid = 0;
 	target->tries_remaining = attempts;
 	target->successful = 0;
 	metadata->update_state = FW_STATE_READY;
@@ -412,8 +454,6 @@ int fw_metadata_begin_release(struct fw_metadata *metadata,
 	}
 	if (!source->successful || !fw_deployment_valid(source))
 		return -ENOENT;
-	if (release_version < source->release_version)
-		return -EPERM;
 
 	target_id = 1 - source_id;
 	if (metadata->pending_deployment != FW_SLOT_NONE &&
@@ -422,7 +462,8 @@ int fw_metadata_begin_release(struct fw_metadata *metadata,
 
 	target = &metadata->deployment[target_id];
 	*target = *source;
-	target->state = FW_STATE_WRITING;
+	memset(&target->identity, 0, sizeof(target->identity));
+    target->state = FW_STATE_WRITING;
 	target->tries_remaining = 0;
 	target->successful = 0;
 	target->release_version = release_version;

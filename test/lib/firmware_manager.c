@@ -277,7 +277,7 @@ static int lib_test_fw_release_restarts_pending(struct unit_test_state *uts)
 
 LIB_TEST(lib_test_fw_release_restarts_pending, 0);
 
-static int lib_test_fw_release_rejects_downgrade(struct unit_test_state *uts)
+static int lib_test_fw_release_accepts_older_tag(struct unit_test_state *uts)
 {
 	struct fw_metadata metadata;
 	u8 deployment;
@@ -285,11 +285,52 @@ static int lib_test_fw_release_rejects_downgrade(struct unit_test_state *uts)
 	fw_metadata_init(&metadata, 0);
 	metadata.deployment[0].release_version = 7;
 
-	ut_asserteq(-EPERM,
-		    fw_metadata_begin_release(&metadata, 6, &deployment));
+	ut_assertok(fw_metadata_begin_release(&metadata, 6, &deployment));
+	ut_asserteq(1, deployment);
+	ut_asserteq(6, metadata.deployment[deployment].release_version);
+	ut_asserteq(7, metadata.deployment[0].release_version);
 	ut_asserteq(FW_SLOT_NONE, metadata.pending_deployment);
 
 	return 0;
 }
 
-LIB_TEST(lib_test_fw_release_rejects_downgrade, 0);
+LIB_TEST(lib_test_fw_release_accepts_older_tag, 0);
+
+static int lib_test_fw_metadata_identity(struct unit_test_state *uts)
+{
+    struct fw_metadata_store store;
+    struct fw_test_store data;
+    struct fw_metadata metadata, restored;
+    u8 target;
+
+    fw_test_setup(&data, &store);
+    fw_metadata_init(&metadata, 0);
+    metadata.deployment[0].identity.valid = 1;
+    strcpy(metadata.deployment[0].identity.tag, "v1.0.12");
+    memset(metadata.deployment[0].identity.id, 0x12, 32);
+    memset(metadata.deployment[0].identity.hash, 0xab, 64);
+    metadata.deployment[0].identity.size[0] = 12345;
+    metadata.deployment[0].identity.size[1] = 67890;
+    ut_assertok(fw_metadata_save(&store, &metadata));
+    ut_assertok(fw_metadata_save(&store, &metadata));
+    ut_assertok(fw_metadata_load(&store, &restored));
+    ut_assertok(memcmp(&metadata.deployment[0].identity,
+                       &restored.deployment[0].identity,
+                       sizeof(struct fw_identity)));
+    data.copy[metadata.source_copy][160] ^= 1;
+    ut_assertok(fw_metadata_load(&store, &restored));
+    ut_asserteq(metadata.sequence - 1, restored.sequence);
+    /* The valid header alone cannot make a torn new record bootable. */
+    memcpy(data.copy[metadata.source_copy], data.copy[restored.source_copy], 128);
+    memset(data.copy[metadata.source_copy] + 128, 0xff, FW_METADATA_SIZE - 128);
+    ut_assertok(fw_metadata_load(&store, &restored));
+    ut_asserteq(metadata.sequence - 1, restored.sequence);
+    ut_assertok(fw_metadata_prepare_update(&restored, FW_COMPONENT_BOOTLOADER,
+                                          1, 13, 0, 0, 3, &target));
+    ut_assert(restored.deployment[target].identity.valid);
+    ut_assertok(fw_metadata_begin_release(&restored, 65549, &target));
+    ut_assert(!restored.deployment[target].identity.valid);
+    ut_assert(restored.deployment[0].identity.valid);
+    return 0;
+}
+LIB_TEST(lib_test_fw_metadata_identity, 0);
