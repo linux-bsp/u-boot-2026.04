@@ -153,8 +153,22 @@ unsigned long board_spl_mmc_get_uboot_raw_sector(struct mmc *mmc,
 	if (slot > 1)
 		return raw_sect;
 
-	printf("SPL: fw deployment %u, bootloader slot %c\n", selected,
-	       'a' + slot);
+	{
+		const struct fw_deployment *deployment = &metadata.deployment[selected];
+		const struct fw_component_slot *boot =
+			&deployment->component[FW_COMPONENT_BOOTLOADER];
+		char id[9] = "unknown";
+
+		if (deployment->identity.valid)
+			for (unsigned int i = 0; i < 4; i++)
+				snprintf(id + i * 2, 3, "%02x", deployment->identity.id[i]);
+		printf("[fwctl] [INFO] stage=%s U-Boot selected: slot=%c "
+		       "version=v%u.%u.%u release_id=%s metadata=verified "
+		       "payload_verification=pending\n",
+		       IS_ENABLED(CONFIG_CPU_V7R) ? "R5-SPL" : "A53-SPL",
+		       'A' + slot, boot->version >> 16,
+		       (boot->version >> 8) & 255, boot->version & 255, id);
+	}
 	return slot ? CONFIG_SPL_FW_RAW_SECTOR_B : raw_sect;
 }
 #endif

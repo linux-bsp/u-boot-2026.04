@@ -103,6 +103,8 @@ struct fw_release {
 static struct fw_identity boot_identity;
 static unsigned boot_identity_deployment;
 static bool boot_identity_ready;
+static u8 boot_kernel_slot, boot_rootfs_slot;
+static u32 boot_kernel_version, boot_rootfs_version;
 
 int fw_boot_identity_fixup(void *blob)
 {
@@ -111,14 +113,22 @@ int fw_boot_identity_fixup(void *blob)
     if (node < 0) return node;
     fdt_delprop(blob, node, "fw,tag"); fdt_delprop(blob, node, "fw,id");
     fdt_delprop(blob, node, "fw,deployment");
+    fdt_delprop(blob, node, "fw,kernel-slot");
+    fdt_delprop(blob, node, "fw,rootfs-slot");
+    fdt_delprop(blob, node, "fw,kernel-version");
+    fdt_delprop(blob, node, "fw,rootfs-version");
     if (!boot_identity_ready || env_get_yesno("tftp_kernel") == 1 || env_get_yesno("nfs_root") == 1) return 0;
-    if (!boot_identity.valid) { printf("[fw] [INFO] stage=uboot identity=unknown deployment=%u\n", boot_identity_deployment); return 0; }
+    ret = fdt_setprop_u32(blob, node, "fw,kernel-slot", boot_kernel_slot);
+    if (!ret) ret = fdt_setprop_u32(blob, node, "fw,rootfs-slot", boot_rootfs_slot);
+    if (!ret) ret = fdt_setprop_u32(blob, node, "fw,kernel-version", boot_kernel_version);
+    if (!ret) ret = fdt_setprop_u32(blob, node, "fw,rootfs-version", boot_rootfs_version);
+    if (!ret) ret = fdt_setprop_u32(blob, node, "fw,deployment", boot_identity_deployment);
+    if (ret) return ret;
+    if (!boot_identity.valid) return 0;
     char hash[65];
     for (unsigned i = 0; i < 32; i++) snprintf(hash+i*2, 3, "%02x", boot_identity.id[i]);
     ret = fdt_setprop_string(blob, node, "fw,tag", boot_identity.tag);
     if (!ret) ret = fdt_setprop_string(blob, node, "fw,id", hash);
-    if (!ret) ret = fdt_setprop_u32(blob, node, "fw,deployment", boot_identity_deployment);
-    if (!ret) printf("[fw] [INFO] stage=uboot tag=%s id=%.8s deployment=%u\n", boot_identity.tag, hash, boot_identity_deployment);
     return ret;
 }
 
@@ -1229,6 +1239,8 @@ static int fw_load_selected_kernel(const struct fw_layout *layout,
 	struct fw_package package;
 	void *fit;
 	size_t size;
+	u8 digest[32];
+	int length = sizeof(digest);
 	u8 selected;
 	int ret = fw_metadata_get_selected(metadata, &selected);
 
@@ -1255,21 +1267,50 @@ static int fw_load_selected_kernel(const struct fw_layout *layout,
 	    (component->version && package.version != component->version) ||
 	    package.rollback_index < component->rollback_index))
 		ret = -EPERM;
+    if (!ret)
+        ret = hash_block("sha256", fit, size, digest, &length);
+    if (!ret && length != sizeof(digest))
+        ret = -EIO;
     if (!ret && metadata->deployment[selected].identity.valid) {
         const struct fw_identity *identity = &metadata->deployment[selected].identity;
-        u8 digest[32]; int length = 32;
-        ret = hash_block("sha256", fit, size, digest, &length);
-        if (!ret && (size != identity->size[0] || memcmp(digest, identity->hash[0], 32))) ret = -EBADMSG;
+        if (size != identity->size[0] || memcmp(digest, identity->hash[0], 32))
+            ret = -EBADMSG;
     }
     if (!ret) {
-        boot_identity = metadata->deployment[selected].identity;
-        boot_identity_deployment = selected; boot_identity_ready = true;
+        const struct fw_component_slot *rootfs =
+            &metadata->deployment[selected].component[FW_COMPONENT_ROOTFS];
+
+        if (!rootfs->valid || rootfs->slot > 1)
+            ret = -EINVAL;
+        else {
+            boot_identity = metadata->deployment[selected].identity;
+            boot_identity_deployment = selected;
+            boot_identity_ready = true;
+            boot_kernel_slot = component->slot;
+            boot_rootfs_slot = rootfs->slot;
+            boot_kernel_version = package.version;
+            boot_rootfs_version = rootfs->version;
+        }
     }
 	unmap_sysmem(fit);
-	if (!ret)
-		printf("[fw] [INFO] verified kernel slot %c version v%u.%u.%u\n",
-               'a' + component->slot, package.version >> 16,
-               (package.version >> 8) & 255, package.version & 255);
+	if (!ret) {
+        char sha[9], id[9] = "unknown";
+
+        for (unsigned int i = 0; i < 4; i++)
+            snprintf(sha + i * 2, 3, "%02x", digest[i]);
+        if (boot_identity.valid)
+            for (unsigned int i = 0; i < 4; i++)
+                snprintf(id + i * 2, 3, "%02x", boot_identity.id[i]);
+        putc('\n');
+        printf("[fwctl] [INFO] stage=U-Boot kernel FIT verified: "
+               "slot=%c version=v%u.%u.%u release_id=%s fit_sha256=%s\n",
+               'A' + component->slot, package.version >> 16,
+               (package.version >> 8) & 255, package.version & 255, id, sha);
+    } else {
+        putc('\n');
+        printf("[fwctl] [ERROR] stage=U-Boot kernel FIT verification failed: "
+               "slot=%c error=%d\n", 'A' + component->slot, ret);
+    }
 	return ret;
 }
 
@@ -1280,6 +1321,8 @@ static int fw_prepare_verity(const struct fw_layout *layout,
                              ulong addr, const char *device)
 {
     const struct fw_region *region;
+    const struct fw_component_slot *rootfs;
+    const struct fw_identity *identity;
     struct fw_package package;
     const void *dtb;
     void *fit;
@@ -1306,12 +1349,29 @@ static int fw_prepare_verity(const struct fw_layout *layout,
     if (!fdt_getprop(fit, conf, FIT_RAMDISK_PROP, NULL)) { ret = -ENOENT; goto out; }
     ret = fit_image_get_data(fit, node, &dtb, &dtb_size);
     if (ret) goto out;
+    rootfs = &metadata->deployment[selected].component[FW_COMPONENT_ROOTFS];
+    identity = &metadata->deployment[selected].identity;
     region = fw_component_region(layout, FW_COMPONENT_ROOTFS,
-        metadata->deployment[selected].component[FW_COMPONENT_ROOTFS].slot);
-    if (!region) { ret = -EINVAL; goto out; }
+        rootfs->slot);
+    if (!region || !rootfs->valid || rootfs->slot > 1) { ret = -EINVAL; goto out; }
     ret = fw_verity_args(dtb, dtb_size, device, region->size, args, sizeof(args));
     if (!ret) ret = env_set("fw_rootargs", args);
-    if (!ret) printf("[fw] [INFO] rootfs dm-verity parameters verified for %s\n", device);
+    if (!ret) {
+        char id[9] = "unknown", sha[9] = "unknown";
+
+        if (identity->valid)
+            for (unsigned int i = 0; i < 4; i++) {
+                snprintf(id + i * 2, 3, "%02x", identity->id[i]);
+                snprintf(sha + i * 2, 3, "%02x", identity->hash[1][i]);
+            }
+        putc('\n');
+        printf("[fwctl] [INFO] stage=U-Boot rootfs FIT policy verified: "
+               "slot=%c version=v%u.%u.%u release_id=%s "
+               "expected_sha256=%s payload_verification=pending-initramfs\n",
+               'A' + rootfs->slot, rootfs->version >> 16,
+               (rootfs->version >> 8) & 255, rootfs->version & 255,
+               id, sha);
+    }
 out:
     unmap_sysmem(fit);
     return ret;
