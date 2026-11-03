@@ -355,18 +355,19 @@ storage backends. AM625 normal eMMC boot now uses this command.
 
 ``fw recover-kernel`` requires CONFIG_WGET and known selected-kernel metadata.
 It first checks the stored kernel; healthy kernels are left untouched. Otherwise
-it requests the exact version from the configured OTA server::
+it requests the exact version and firmware content ID from the configured OTA server::
 
     setenv ota_serverip 192.168.10.246
     setenv ota_serverport 8090
     fw select
     fw recover-kernel
 
-The endpoint is ``/recovery/<product>/<layout>/kernel/<version>/kernel.itb``.
+The endpoint is
+``/recovery/<product>/<layout>/kernel/<version>/<firmware-id>/kernel.itb``.
 ``ota_serverip`` defaults to ``serverip`` and the port defaults to 8090. Legacy
 HTTP temporarily uses ``httpdstp`` and restores its previous value afterwards.
 The download buffer is bounded by the kernel region size. FIT validation and
-exact component/version/rollback/build-time checks precede any write. Only the
+exact component/version/firmware-ID/payload-hash/rollback/build-time checks precede any write. Only the
 damaged kernel slot is repaired and read back; metadata and the other slot are
 unchanged. Retrying after interrupted recovery is possible. Physical media
 failure, missing metadata and unknown version zero require manual recovery.

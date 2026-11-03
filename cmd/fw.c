@@ -1387,6 +1387,23 @@ static bool __maybe_unused fw_identifier_valid(const char *id)
 	return true;
 }
 
+static int fw_kernel_payload_matches_identity(const void *fit, int conf,
+					      const struct fw_identity *identity)
+{
+	size_t size = fdt_totalsize(fit);
+	u8 digest[FW_SHA256_SIZE];
+	int digest_size = sizeof(digest);
+	int ret;
+
+	if (size != identity->size[0])
+		return -EBADMSG;
+	ret = hash_block("sha256", fit, size, digest, &digest_size);
+	if (ret || digest_size != sizeof(digest))
+		return ret ? ret : -EIO;
+	(void)conf;
+	return memcmp(digest, identity->hash[0], sizeof(digest)) ? -EBADMSG : 0;
+}
+
 /* Repair the damaged slot with its exact version; leave metadata/rootfs intact.
  * A failed or interrupted write can be retried on the next boot. Never write
  * the other slot, which may be the only valid rollback deployment.
@@ -1398,6 +1415,7 @@ static int fw_recover_kernel(const struct fw_layout *layout,
 #if IS_ENABLED(CONFIG_WGET)
 	const struct fw_component_slot *component;
 	const struct fw_region *region;
+	const struct fw_identity *identity;
 	struct fw_package package;
 	struct wget_http_info info = {
 		.method = WGET_HTTP_METHOD_GET,
@@ -1407,7 +1425,7 @@ static int fw_recover_kernel(const struct fw_layout *layout,
 	const char *server = env_get("ota_serverip");
 	const char *old_port = env_get("httpdstp");
 	char *saved_port;
-	char uri[384], port_text[8];
+	char uri[448], port_text[8], firmware_id[65];
 	ulong port = env_get_ulong("ota_serverport", 10, 8090);
 	ulong addr = env_get_hex("kernel_addr_r", image_load_addr);
 	void *buffer;
@@ -1423,10 +1441,17 @@ static int fw_recover_kernel(const struct fw_layout *layout,
 	if (ret)
 		return ret;
 	component = &metadata->deployment[selected].component[FW_COMPONENT_KERNEL];
+	identity = &metadata->deployment[selected].identity;
 	if (!component->valid || !component->version) {
 		printf("[fw] [INFO] recovery needs a known kernel version in metadata\n");
 		return -EINVAL;
 	}
+	if (!identity->valid || !identity->tag[0]) {
+		printf("[fwctl] [ERROR] kernel recovery needs trusted version+hash identity\n");
+		return -EINVAL;
+	}
+	for (unsigned int i = 0; i < sizeof(identity->id); i++)
+		snprintf(firmware_id + i * 2, 3, "%02x", identity->id[i]);
 	if (!fw_load_selected_kernel(layout, storage, metadata, addr)) {
 		printf("[fw] [INFO] selected kernel is healthy; no repair needed\n");
 		return 0;
@@ -1438,8 +1463,8 @@ static int fw_recover_kernel(const struct fw_layout *layout,
 	if (!buffer)
 		return -ENOMEM;
 	info.buffer_size = region->size;
-	snprintf(uri, sizeof(uri), "http://%s/recovery/%s/%s/kernel/%u/kernel.itb",
-		 server, layout->product, layout->layout_id, component->version);
+	snprintf(uri, sizeof(uri), "http://%s/recovery/%s/%s/kernel/%u/%s/kernel.itb",
+		 server, layout->product, layout->layout_id, component->version, firmware_id);
 	saved_port = old_port ? strdup(old_port) : NULL;
 	if (old_port && !saved_port) {
 		free(buffer);
@@ -1448,8 +1473,9 @@ static int fw_recover_kernel(const struct fw_layout *layout,
 	snprintf(port_text, sizeof(port_text), "%lu", port);
 	ret = env_set("httpdstp", port_text);
 	if (!ret) {
-		printf("[fw] [INFO] requesting exact kernel %u from %s:%lu\n",
-		       component->version, server, port);
+		printf("[fwctl] [INFO] requesting kernel v%u.%u.%u / %.8s from %s:%lu\n",
+		       component->version >> 16, (component->version >> 8) & 255,
+		       component->version & 255, firmware_id, server, port);
 		ret = wget_request(map_to_sysmem(buffer), uri, &info);
 	}
 	wget_info = old_info;
@@ -1466,6 +1492,9 @@ static int fw_recover_kernel(const struct fw_layout *layout,
 	    (component->build_time_minutes &&
 	     package.build_time_minutes != component->build_time_minutes)))
 		ret = -EPERM;
+	if (!ret)
+		ret = fw_kernel_payload_matches_identity(buffer, package.conf_noffset,
+							 identity);
 	if (!ret)
 		ret = fw_write_region(storage, region, buffer, fit_get_size(buffer));
 	free(buffer);
