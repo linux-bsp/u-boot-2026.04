@@ -10,7 +10,8 @@ Synopsis
 
     fwctl list
     fwctl status
-    fwctl init <a|b>
+    fwctl capabilities
+    fwctl factory-init <a|b> --force
     fwctl verify <tftp file|addr address size>
     fwctl update <tftp file|addr address size>
     fwctl update tftp <release-file> all
@@ -48,9 +49,17 @@ then rebuilds the target from the current confirmed deployment. This permits a
 mistaken package to be replaced immediately without booting or confirming it,
 while preventing a failed replacement from booting partially overwritten data.
 
-"fwctl init" is a destructive factory operation for metadata only. It declares
+"fwctl factory-init" is a destructive factory operation for metadata only. It declares
 that all components in the selected slot are the installed, confirmed
-deployment. It does not write component images.
+deployment. It does not write component images. The explicit --force flag is required;
+missing flags are rejected before opening storage. The old init spelling is
+removed. Linux reserves fwctl init for initramfs PID 1; factory-init has the
+same metadata-only meaning in both runtimes.
+
+fwctl help and fwctl capabilities are available without a working storage
+layout. Capabilities describe the available transport and recovery role.
+Component versions in human output use vMAJOR.MINOR.PATCH; complete firmware
+identities retain the version tag and eight-character display hash.
 
 On platforms without an SPL selector, "fwctl select" selects a deployment and
 persists the decreased attempt count before booting an unconfirmed deployment.
@@ -104,11 +113,11 @@ rootfs_b           0x0c000000   0x60000
 A factory image must install "tiboot3.bin", "tispl.bin", and "u-boot.img" at
 the A offsets above, then initialize metadata once::
 
-    fwctl init a
+    fwctl factory-init a --force
     fwctl status
 
 The first boot also auto-initializes completely erased metadata. Explicit
-"fwctl init" remains the recommended factory step and must not be used as a normal
+"fwctl factory-init" remains the recommended factory step and must not be used as a normal
 upgrade command.
 
 The firmware manager uses the "FWMD" metadata magic and "fw,*" FIT properties.
@@ -118,7 +127,7 @@ the new compiled-in environment and initialize metadata once::
 
     env default -a
     saveenv
-    fwctl init a
+    fwctl factory-init a --force
 
 This installs the RAW A/B boot script, redundant MMC environment settings, and
 the default network addresses.
@@ -259,7 +268,7 @@ Use an image already in memory::
 
 Initialize a factory image and select boot offsets::
 
-    fwctl init a
+    fwctl factory-init a --force
     fwctl select
 
 AM62x network boot switches
@@ -339,7 +348,7 @@ from that same deployment.
 
 The optional "auto-init" layout property initializes metadata only when both
 copies contain erased bytes. Corrupt non-empty metadata still requires an
-explicit factory recovery with "fwctl init".
+explicit factory recovery with "fwctl factory-init".
 
 Verified kernel loading and HTTP recovery
 ----------------------------------------

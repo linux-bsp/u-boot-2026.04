@@ -979,9 +979,10 @@ static void fw_print_metadata(const struct fw_metadata *metadata)
 			const struct fw_component_slot *component =
 				&deployment->component[j];
 
-			printf("  %-10s slot=%c version=%u rollback=%u valid=%u\n",
+			printf("  %-10s slot=%c version=v%u.%u.%u rollback=%u valid=%u\n",
 			       fw_component_name(j), 'a' + component->slot,
-			       component->version, component->rollback_index,
+			       component->version >> 16, (component->version >> 8) & 255,
+                   component->version & 255, component->rollback_index,
 			       component->valid);
 		}
 	}
@@ -1141,8 +1142,8 @@ static int fw_update_release(const struct fw_layout *layout,
 	if (ret)
 		return ret;
 	if (replacing)
-		printf("Replacing pending deployment %u with release %u\n",
-		       deployment, release.version);
+		printf("[fwctl] [INFO] Replacing pending deployment %u with release v%u.%u.%u\n",
+		       deployment, release.version >> 16, (release.version >> 8) & 255, release.version & 255);
 
 	for (i = 0; i < release.count; i++) {
 		item = &release.component[i];
@@ -1508,6 +1509,20 @@ static int do_fw(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[])
 
 	if (argc < 2)
 		return CMD_RET_USAGE;
+    if (!strcmp(argv[1], "help")) {
+        if (argc != 2) return CMD_RET_USAGE;
+        cmd_usage(cmdtp); return CMD_RET_SUCCESS;
+    }
+    if (!strcmp(argv[1], "capabilities")) {
+        if (argc != 2) return CMD_RET_USAGE;
+        puts("runtime=uboot\nmetadata=FWMD1\nupdate_sources=tftp,memory\n"
+             "recovery=kernel\nboot_confirmation=linux-health-check\nfactory_init=explicit-force\n");
+        return CMD_RET_SUCCESS;
+    }
+    if (!strcmp(argv[1], "init")) return CMD_RET_USAGE;
+    if (!strcmp(argv[1], "factory-init") && (argc != 4 ||
+        (strcmp(argv[2], "a") && strcmp(argv[2], "b")) || strcmp(argv[3], "--force")))
+        return CMD_RET_USAGE;
 
 	ret = fw_open(&layout, &storage, &store, &store_ctx);
 	if (ret) {
@@ -1525,10 +1540,9 @@ static int do_fw(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[])
 		return CMD_RET_SUCCESS;
 	}
 
-	if (!strcmp(argv[1], "init")) {
-		if (argc != 3 || (strcmp(argv[2], "a") && strcmp(argv[2], "b")))
-			return CMD_RET_USAGE;
+	if (!strcmp(argv[1], "factory-init")) {
 		slot = argv[2][0] - 'a';
+        printf("[fwctl] [WARN] Rebuilding metadata for slot %c; previous deployment history is discarded\n", 'a' + slot);
 		fw_metadata_init(&metadata, slot);
 		ret = fw_metadata_save(&store, &metadata);
 		if (!ret)
@@ -1551,7 +1565,7 @@ static int do_fw(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[])
 			       'a' + layout.default_slot);
 	}
 	if (ret) {
-		printf("[fwctl] [ERROR] metadata unavailable (%d); run 'fwctl init a|b'\n",
+		printf("[fwctl] [ERROR] metadata unavailable (%d); factory recovery: fwctl factory-init <a|b> --force\n",
 		       ret);
 		return CMD_RET_FAILURE;
 	}
@@ -1690,15 +1704,16 @@ static int do_fw(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[])
 			ret = fw_verify_package(&layout, fit, fit_size,
 						&package);
 			if (!ret) {
-				printf("Valid %s package, version %u, rollback %u\n",
+				printf("Valid %s package, version v%u.%u.%u, rollback %u\n",
 				       fw_component_name(package.component),
-				       package.version, package.rollback_index);
+				       package.version >> 16, (package.version >> 8) & 255, package.version & 255,
+                       package.rollback_index);
 			} else if (ret == -EOPNOTSUPP) {
 				memset(&release, 0, sizeof(release));
 				ret = fw_verify_release(&layout, fit, fit_size, &release);
 				if (!ret)
-					printf("Valid release package, version %u, rollback %u\n",
-					       release.version,
+					printf("Valid release package, version v%u.%u.%u, rollback %u\n",
+					       release.version >> 16, (release.version >> 8) & 255, release.version & 255,
 					       release.rollback_index);
 			}
 		} else {
@@ -1722,7 +1737,9 @@ U_BOOT_LONGHELP(fw, "list\n"
 		    "fwctl load-kernel <address>\n"
             "fwctl verity-args <kernel-fit-address> <rootfs-device>\n"
 		    "fwctl recover-kernel\n"
-		    "fwctl init <a|b>\n"
+		    "fwctl help\n"
+		    "fwctl capabilities\n"
+		    "fwctl factory-init <a|b> --force\n"
 		    "fwctl verify <tftp file|addr address size>\n"
 		    "fwctl update <tftp file|addr address size>\n"
 		    "fwctl update tftp <release-file> all\n"
