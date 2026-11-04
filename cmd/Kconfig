@@ -192,7 +192,7 @@ config CMD_FWU_METADATA
 
 config CMD_FW
 	bool "fw - RAW A/B firmware manager"
-	depends on FIT && OF_CONTROL
+	depends on FIT && OF_CONTROL && HWID
 	depends on BLK || DM_SPI_FLASH
 	select CRC32
 	select SHA256

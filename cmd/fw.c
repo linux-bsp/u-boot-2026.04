@@ -64,8 +64,6 @@ struct fw_layout {
 	bool auto_init;
 	bool allow_bootloader_update;
 	bool spl_selects;
-	const char *product;
-	const char *layout_id;
 	struct fw_region region[FW_REGION_COUNT];
 };
 
@@ -166,10 +164,6 @@ static int fw_read_layout(struct fw_layout *layout)
 		return -EINVAL;
 	}
 
-	layout->product = ofnode_read_string(node, "product");
-	layout->layout_id = ofnode_read_string(node, "layout-id");
-	if (!layout->product || !layout->layout_id)
-		return -EINVAL;
 	attempts = ofnode_read_u32_default(node, "boot-attempts",
 					   FW_DEFAULT_ATTEMPTS);
 	if (!attempts || attempts > U8_MAX)
@@ -533,7 +527,7 @@ static int fw_verify_prop(const void *fit, int conf, const char *prop)
 static int fw_verify_package(const struct fw_layout *layout, const void *fit,
 			     size_t size, struct fw_package *package)
 {
-	const char *type, *product, *layout_id;
+	const char *type;
 	int conf, ret;
 
 	ret = fit_check_format(fit, size);
@@ -548,19 +542,12 @@ static int fw_verify_package(const struct fw_layout *layout, const void *fit,
 	ret = fit_config_verify(fit, conf);
 	if (ret)
 		return -EACCES;
-	if (IS_ENABLED(CONFIG_HWID)) {
-		ret = hwid_fit_check(fit, conf);
-		if (ret) return ret;
-	}
+	ret = hwid_fit_check(fit, conf);
+	if (ret) return ret;
 
 	type = fdt_getprop(fit, conf, "fw,type", NULL);
-	product = fdt_getprop(fit, conf, "fw,product", NULL);
-	layout_id = fdt_getprop(fit, conf, "fw,layout-id", NULL);
-	if (!type || !product || !layout_id)
+	if (!type)
 		return -EINVAL;
-	if (strcmp(product, layout->product) ||
-	    strcmp(layout_id, layout->layout_id))
-		return -EPERM;
 
 	if (!strcmp(type, "bootloader"))
 		package->component = FW_COMPONENT_BOOTLOADER;
@@ -677,7 +664,7 @@ static int read_release_identity(const void *fit, int conf, u32 version, struct 
 static int fw_verify_release(const struct fw_layout *layout, const void *fit,
 			     size_t size, struct fw_release *release)
 {
-	const char *type, *product, *layout_id, *name, *sha256;
+	const char *type, *name, *sha256;
 	unsigned int seen = 0;
 	char prop[48];
 	int conf, count, i, len, ret;
@@ -694,19 +681,12 @@ static int fw_verify_release(const struct fw_layout *layout, const void *fit,
 	ret = fit_config_verify(fit, conf);
 	if (ret)
 		return -EACCES;
-	if (IS_ENABLED(CONFIG_HWID)) {
-		ret = hwid_fit_check(fit, conf);
-		if (ret) return ret;
-	}
+	ret = hwid_fit_check(fit, conf);
+	if (ret) return ret;
 
 	type = fdt_getprop(fit, conf, "fw,type", NULL);
-	product = fdt_getprop(fit, conf, "fw,product", NULL);
-	layout_id = fdt_getprop(fit, conf, "fw,layout-id", NULL);
-	if (!type || strcmp(type, "release") || !product || !layout_id)
+	if (!type || strcmp(type, "release"))
 		return -EINVAL;
-	if (strcmp(product, layout->product) ||
-	    strcmp(layout_id, layout->layout_id))
-		return -EPERM;
 
 	ret = fw_fit_u32(fit, conf, "fw,version", &release->version);
 	if (ret)
@@ -1386,15 +1366,7 @@ out:
     return ret;
 }
 
-static bool __maybe_unused fw_identifier_valid(const char *id)
-{
-	if (!id || !*id || strlen(id) > 63)
-		return false;
-	for (; *id; id++)
-		if (!isalnum(*id) && !strchr("._-", *id))
-			return false;
-	return true;
-}
+
 
 static int fw_kernel_payload_matches_identity(const void *fit, int conf,
 					      const struct fw_identity *identity)
@@ -1435,6 +1407,8 @@ static int fw_recover_kernel(const struct fw_layout *layout,
 	const char *old_port = env_get("httpdstp");
 	char *saved_port;
 	char uri[448], port_text[8], firmware_id[65];
+    struct hwid_status hardware;
+    if (hwid_read(&hardware)) return -ENODATA;
 	ulong port = env_get_ulong("ota_serverport", 10, 8090);
 	ulong addr = env_get_hex("kernel_addr_r", image_load_addr);
 	void *buffer;
@@ -1443,8 +1417,7 @@ static int fw_recover_kernel(const struct fw_layout *layout,
 
 	if (!server || !*server)
 		server = env_get("serverip");
-	if (!server || !string_to_ip(server).s_addr || !port || port > 65535 ||
-	    !fw_identifier_valid(layout->product) || !fw_identifier_valid(layout->layout_id))
+	if (!server || !string_to_ip(server).s_addr || !port || port > 65535)
 		return -EINVAL;
 	ret = fw_metadata_get_selected(metadata, &selected);
 	if (ret)
@@ -1472,8 +1445,8 @@ static int fw_recover_kernel(const struct fw_layout *layout,
 	if (!buffer)
 		return -ENOMEM;
 	info.buffer_size = region->size;
-	snprintf(uri, sizeof(uri), "http://%s/recovery/%s/%s/kernel/%u/%s/kernel.itb",
-		 server, layout->product, layout->layout_id, component->version, firmware_id);
+	snprintf(uri, sizeof(uri), "http://%s/recovery/%s/kernel/%u/%s/kernel.itb",
+		 server, hardware.text, component->version, firmware_id);
 	saved_port = old_port ? strdup(old_port) : NULL;
 	if (old_port && !saved_port) {
 		free(buffer);
@@ -1537,9 +1510,7 @@ static int do_fw(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[])
 	}
 
 	if (!strcmp(argv[1], "list")) {
-		printf("product: %s  layout: %s  storage: %s\n", layout.product,
-		       layout.layout_id,
-		       layout.type == FW_STORAGE_MMC ? "mmc" : "spi-nor");
+		printf("storage: %s\n", layout.type == FW_STORAGE_MMC ? "mmc" : "spi-nor");
 		for (int i = 0; i < FW_REGION_COUNT; i++)
 			printf("%-12s offset=%#llx size=%#llx\n",
 			       layout.region[i].name,

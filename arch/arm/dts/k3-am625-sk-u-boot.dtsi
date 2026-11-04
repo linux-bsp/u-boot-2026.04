@@ -11,8 +11,6 @@
 		compatible = "u-boot,firmware-manager";
 		storage = "mmc";
 		device = <1>;
-		product = "ti-am62x";
-		layout-id = "am62x-sd-ab-v1";
 		boot-attempts = <3>;
 		default-slot = <0>;
 		auto-init;
