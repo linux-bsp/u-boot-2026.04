@@ -7,6 +7,7 @@
 #include <firmware_manager.h>
 #include <fw_verity.h>
 #include <hash.h>
+#include <hwid.h>
 #include <hexdump.h>
 #include <image.h>
 #include <mapmem.h>
@@ -547,6 +548,10 @@ static int fw_verify_package(const struct fw_layout *layout, const void *fit,
 	ret = fit_config_verify(fit, conf);
 	if (ret)
 		return -EACCES;
+	if (IS_ENABLED(CONFIG_HWID)) {
+		ret = hwid_fit_check(fit, conf);
+		if (ret) return ret;
+	}
 
 	type = fdt_getprop(fit, conf, "fw,type", NULL);
 	product = fdt_getprop(fit, conf, "fw,product", NULL);
@@ -689,6 +694,10 @@ static int fw_verify_release(const struct fw_layout *layout, const void *fit,
 	ret = fit_config_verify(fit, conf);
 	if (ret)
 		return -EACCES;
+	if (IS_ENABLED(CONFIG_HWID)) {
+		ret = hwid_fit_check(fit, conf);
+		if (ret) return ret;
+	}
 
 	type = fdt_getprop(fit, conf, "fw,type", NULL);
 	product = fdt_getprop(fit, conf, "fw,product", NULL);

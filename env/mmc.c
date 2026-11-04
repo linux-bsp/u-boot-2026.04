@@ -465,8 +465,10 @@ static int env_mmc_load_redundant(void)
 	int dev = mmc_get_env_dev();
 	const char *errmsg = NULL;
 
-	ALLOC_CACHE_ALIGN_BUFFER(env_t, tmp_env1, 1);
-	ALLOC_CACHE_ALIGN_BUFFER(env_t, tmp_env2, 1);
+	/* Environment buffers must not consume the small SPL stack. */
+	env_t *tmp_env1 = memalign(ARCH_DMA_MINALIGN, CONFIG_ENV_SIZE);
+	env_t *tmp_env2 = memalign(ARCH_DMA_MINALIGN, CONFIG_ENV_SIZE);
+	if (!tmp_env1 || !tmp_env2) { ret = -ENOMEM; goto err; }
 
 	mmc_initialize(NULL);
 
@@ -507,6 +509,8 @@ static int env_mmc_load_redundant(void)
 fini:
 	fini_mmc_for_env(mmc);
 err:
+	free(tmp_env1);
+	free(tmp_env2);
 	if (ret)
 		env_set_default(errmsg, 0);
 

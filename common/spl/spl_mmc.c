@@ -9,6 +9,7 @@
 #include <log.h>
 #include <part.h>
 #include <spl.h>
+#include <hwid.h>
 #include <spl_load.h>
 #include <linux/compiler.h>
 #include <errno.h>
@@ -386,6 +387,8 @@ int spl_mmc_load(struct spl_image_info *spl_image,
 			return ret;
 		}
 	}
+
+	if (CONFIG_IS_ENABLED(HWID)) hwid_spl_init();
 
 	boot_mode = spl_mmc_boot_mode(mmc, bootdev->boot_device);
 	ret = -EINVAL;

@@ -3,6 +3,8 @@
 # (C) Copyright 2000-2006
 # Wolfgang Denk, DENX Software Engineering, wd@denx.de.
 
+obj-$(CONFIG_$(PHASE_)HWID) += hwid.o
+
 ifndef CONFIG_XPL_BUILD
 
 obj-$(CONFIG_EFI_CLIENT) += efi_client/

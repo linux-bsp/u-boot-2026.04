@@ -34,6 +34,7 @@
 #include <dm.h>
 #include <efi_loader.h>
 #include <env.h>
+#include <hwid.h>
 #include <env_internal.h>
 #include <fdtdec.h>
 #include <init.h>
@@ -454,6 +455,7 @@ static int initr_env(void)
 		env_set_default(NULL, 0);
 
 	env_import_fdt();
+	if (IS_ENABLED(CONFIG_HWID)) hwid_export_env();
 
 	if (IS_ENABLED(CONFIG_OF_CONTROL))
 		env_set_hex("fdtcontroladdr",

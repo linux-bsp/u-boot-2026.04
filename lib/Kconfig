@@ -1322,3 +1322,13 @@ config UTHREAD_STACK_SIZE
 endmenu
 
 source "lib/fwu_updates/Kconfig"
+
+config HWID
+	bool "Hardware identity from the U-Boot hwid environment variable"
+	depends on ENV_SUPPORT
+	help
+	  Validate and export the 64-bit HWID using the selected environment backend.
+
+config SPL_HWID
+	bool "Read HWID from the environment in SPL"
+	depends on HWID && SPL_ENV_SUPPORT

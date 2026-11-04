@@ -17,6 +17,7 @@
 #include <errno.h>
 #include <spl.h>
 #include <spl_load.h>
+#include <hwid.h>
 #include <asm/global_data.h>
 #include <asm/io.h>
 #include <dm/ofnode.h>
@@ -87,6 +88,8 @@ static int spl_spi_load_image(struct spl_image_info *spl_image,
 	unsigned int sf_bus = spl_spi_boot_bus();
 	unsigned int sf_cs = spl_spi_boot_cs();
 	struct spl_load_info load;
+
+	if (CONFIG_IS_ENABLED(HWID)) hwid_spl_init();
 
 	/*
 	 * Load U-Boot image from SPI flash into RAM

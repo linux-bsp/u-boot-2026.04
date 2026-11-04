@@ -10,6 +10,7 @@
 #include <blk.h>
 #include <efi_loader.h>
 #include <firmware_manager.h>
+#include <hwid.h>
 #include <env.h>
 #include <spl.h>
 #include <init.h>
@@ -101,6 +102,7 @@ unsigned long board_spl_mmc_get_uboot_raw_sector(struct mmc *mmc,
 	u8 pending, selected, slot;
 	bool rolled_back = false;
 	int ret;
+
 
 	ret = fw_metadata_load(&store, &metadata);
 	if (ret) {
@@ -390,6 +392,10 @@ void spl_perform_board_fixups(struct spl_image_info *spl_image)
 #if defined(CONFIG_OF_BOARD_SETUP)
 int ft_board_setup(void *blob, struct bd_info *bd)
 {
+	if (IS_ENABLED(CONFIG_HWID)) {
+		int rc = hwid_fdt_fixup(blob);
+		if (rc) return rc;
+	}
 	int ret = -1;
     if (IS_ENABLED(CONFIG_CMD_FW)) {
         ret = fw_boot_identity_fixup(blob);
