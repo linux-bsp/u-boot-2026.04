@@ -86,6 +86,9 @@ int fw_metadata_prepare_update(struct fw_metadata *metadata,
 			       u32 build_time_minutes,
 			       u8 attempts,
 			       u8 *deployment);
+/* Persist this WRITING state before touching a component's inactive slot. */
+int fw_metadata_begin_component(struct fw_metadata *metadata,
+				enum fw_component component, u8 *deployment);
 int fw_metadata_begin_release(struct fw_metadata *metadata,
 			      u32 release_version, u8 *deployment);
 int fw_metadata_stage_component(struct fw_metadata *metadata, u8 deployment,

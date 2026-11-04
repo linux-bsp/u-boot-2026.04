@@ -98,6 +98,13 @@ static bool fw_deployment_valid(const struct fw_deployment *deployment)
 	return true;
 }
 
+static bool fw_deployment_bootable(const struct fw_deployment *deployment)
+{
+	return deployment->state >= FW_STATE_READY &&
+	       deployment->state <= FW_STATE_CONFIRMED &&
+	       fw_deployment_valid(deployment);
+}
+
 void fw_metadata_init(struct fw_metadata *metadata, u8 slot)
 {
 	struct fw_deployment *deployment;
@@ -330,7 +337,7 @@ int fw_metadata_select(struct fw_metadata *metadata, u8 *deployment)
 
 	if (metadata->boot_once_deployment != FW_SLOT_NONE) {
 		selected = metadata->boot_once_deployment;
-		if (!fw_deployment_valid(&metadata->deployment[selected]))
+		if (!fw_deployment_bootable(&metadata->deployment[selected]))
 			return -EINVAL;
 		metadata->boot_once_deployment = FW_SLOT_NONE;
 		metadata->selected_deployment = selected;
@@ -341,7 +348,7 @@ int fw_metadata_select(struct fw_metadata *metadata, u8 *deployment)
 	if (metadata->pending_deployment != FW_SLOT_NONE) {
 		selected = metadata->pending_deployment;
 		candidate = &metadata->deployment[selected];
-		if (fw_deployment_valid(candidate) &&
+		if (fw_deployment_bootable(candidate) &&
 		    candidate->tries_remaining) {
 			candidate->state = FW_STATE_BOOT_TESTING;
 			candidate->tries_remaining--;
@@ -380,7 +387,7 @@ int fw_metadata_get_selected(const struct fw_metadata *metadata, u8 *deployment)
 		return -EINVAL;
 	selected = metadata->selected_deployment;
 	if (selected > 1 ||
-	    !fw_deployment_valid(&metadata->deployment[selected]))
+	    !fw_deployment_bootable(&metadata->deployment[selected]))
 		return -ENOENT;
 
 	*deployment = selected;
@@ -434,6 +441,47 @@ int fw_metadata_prepare_update(struct fw_metadata *metadata,
 	metadata->update_state = FW_STATE_READY;
 	*deployment = target_id;
 
+	return 0;
+}
+
+int fw_metadata_begin_component(struct fw_metadata *metadata,
+				enum fw_component component, u8 *deployment)
+{
+	struct fw_deployment *source, *target;
+	u8 source_id, target_id;
+
+	if (!metadata || !deployment || component >= FW_COMPONENT_COUNT)
+		return -EINVAL;
+	source_id = metadata->active_deployment;
+	if (source_id > 1 || metadata->last_good_deployment > 1)
+		return -EINVAL;
+	source = &metadata->deployment[source_id];
+	if (!source->successful || !fw_deployment_valid(source)) {
+		source_id = metadata->last_good_deployment;
+		source = &metadata->deployment[source_id];
+	}
+	if (!source->successful || !fw_deployment_valid(source))
+		return -ENOENT;
+	target_id = 1 - source_id;
+	target = &metadata->deployment[target_id];
+	if (metadata->pending_deployment != FW_SLOT_NONE) {
+		if (metadata->pending_deployment != target_id ||
+		    !fw_deployment_valid(target))
+			return -EINVAL;
+		/* Keep earlier components staged by another manual update. */
+	} else {
+		*target = *source;
+	}
+	target->state = FW_STATE_WRITING;
+	target->successful = 0;
+	target->tries_remaining = 0;
+	if (component != FW_COMPONENT_BOOTLOADER)
+		memset(&target->identity, 0, sizeof(target->identity));
+	metadata->pending_deployment = FW_SLOT_NONE;
+	metadata->boot_once_deployment = FW_SLOT_NONE;
+	metadata->selected_deployment = source_id;
+	metadata->update_state = FW_STATE_WRITING;
+	*deployment = target_id;
 	return 0;
 }
 
@@ -529,7 +577,7 @@ int fw_metadata_mark_good(struct fw_metadata *metadata, int deployment)
 		return -EINVAL;
 
 	target = &metadata->deployment[deployment];
-	if (!fw_deployment_valid(target))
+	if (!fw_deployment_bootable(target))
 		return -EINVAL;
 	target->state = FW_STATE_CONFIRMED;
 	target->successful = 1;

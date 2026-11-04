@@ -1,32 +1,32 @@
 .. SPDX-License-Identifier: GPL-2.0+
 
-fw command
-==========
+fwctl command
+=============
 
 Synopsis
 --------
 
 ::
 
-    fw list
-    fw status
-    fw init <a|b>
-    fw verify <tftp file|addr address size>
-    fw update <tftp file|addr address size>
-    fw update tftp <release-file> all
-    fw restore <component> <tftp file|addr address size>
-    fw select
-    fw boot <deployment> [once]
-    fw mark-good [deployment]
-    fw mark-bad <deployment>
-    fw rollback
+    fwctl list
+    fwctl status
+    fwctl init <a|b>
+    fwctl verify <tftp file|addr address size>
+    fwctl update <tftp file|addr address size>
+    fwctl update tftp <release-file> all
+    fwctl restore <component> <tftp file|addr address size>
+    fwctl select
+    fwctl boot <deployment> [once]
+    fwctl mark-good [deployment]
+    fwctl mark-bad <deployment>
+    fwctl rollback
 
 Description
 -----------
 
-The "fw" command updates component FIT packages in fixed RAW regions on eMMC,
+The "fwctl" command updates component FIT packages in fixed RAW regions on eMMC,
 SD, or SPI NOR. It verifies the default FIT configuration, all referenced image
-hashes, "fw,product", "fw,layout-id", and the rollback index before writing an
+hashes, the exact device HWID in "fw,hwids", and the rollback index before writing an
 inactive slot. Data is read back before redundant metadata is committed.
 
 Separate component updates made before the next boot are merged into the same
@@ -34,12 +34,12 @@ pending deployment. For example, updating rootfs and then kernel creates one
 deployment containing both inactive slots.
 
 A release FIT is a manifest, signed in production, containing component file names and complete
-file SHA-256 digests. "fw update tftp release.itb all" downloads each listed
+file SHA-256 digests. "fwctl update tftp release.itb all" downloads each listed
 component, verifies the manifest digest and the component FIT, and writes all
 target slots before committing one pending deployment. A failed download,
 verification, or write leaves the current deployment selected. Bootloader
 updates additionally require both manifest permission and the trusted layout's
-"allow-bootloader-update" property. "fw restore" uses the same verified,
+"allow-bootloader-update" property. "fwctl restore" uses the same verified,
 read-back-checked path to recover a component into its inactive slot.
 
 Starting a release update while another deployment is pending replaces that
@@ -48,14 +48,14 @@ then rebuilds the target from the current confirmed deployment. This permits a
 mistaken package to be replaced immediately without booting or confirming it,
 while preventing a failed replacement from booting partially overwritten data.
 
-"fw init" is a destructive factory operation for metadata only. It declares
+"fwctl init" is a destructive factory operation for metadata only. It declares
 that all components in the selected slot are the installed, confirmed
 deployment. It does not write component images.
 
-On platforms without an SPL selector, "fw select" selects a deployment and
+On platforms without an SPL selector, "fwctl select" selects a deployment and
 persists the decreased attempt count before booting an unconfirmed deployment.
 On platforms with the trusted "spl-selects" property, the first mutable SPL
-stage has already persisted that transition; "fw select" only exports the same
+stage has already persisted that transition; "fwctl select" only exports the same
 selection to the U-Boot environment. It exports:
 
 - "fw_deployment"
@@ -63,9 +63,8 @@ selection to the U-Boot environment. It exports:
 - "fw_kernel_slot" and "fw_kernel_offset"
 - "fw_rootfs_slot" and "fw_rootfs_offset"
 
-After Linux health checks pass, it records the booted deployment in the
-persistent U-Boot environment. The next U-Boot boot calls "fw mark-good" before
-selection. If all attempts are used without confirmation, the next R5 SPL boot
+After Linux health checks pass, ``fwctl mark-good`` confirms the booted
+deployment directly in the redundant firmware metadata. If all attempts are used without confirmation, the next R5 SPL boot
 marks the pending deployment failed and loads the last-good deployment.
 
 AM62x RAW A/B boot flow
@@ -105,11 +104,11 @@ rootfs_b           0x0c000000   0x60000
 A factory image must install "tiboot3.bin", "tispl.bin", and "u-boot.img" at
 the A offsets above, then initialize metadata once::
 
-    fw init a
-    fw status
+    fwctl init a
+    fwctl status
 
 The first boot also auto-initializes completely erased metadata. Explicit
-"fw init" remains the recommended factory step and must not be used as a normal
+"fwctl init" remains the recommended factory step and must not be used as a normal
 upgrade command.
 
 The firmware manager uses the "FWMD" metadata magic and "fw,*" FIT properties.
@@ -119,7 +118,7 @@ the new compiled-in environment and initialize metadata once::
 
     env default -a
     saveenv
-    fw init a
+    fwctl init a
 
 This installs the RAW A/B boot script, redundant MMC environment settings, and
 the default network addresses.
@@ -129,8 +128,7 @@ Component FIT requirements
 
 Every component FIT default configuration must contain::
 
-    fw,product = "ti-am62x";
-    fw,layout-id = "am62x-sd-ab-v1";
+    fw,hwids = "1010001000110000";
     fw,version = <VERSION>;
     fw,rollback-index = <ROLLBACK_INDEX>;
 
@@ -185,8 +183,7 @@ unsigned ITS for development is::
                 firmware = "tiboot3";
                 loadables = "tispl", "uboot";
                 fw,type = "bootloader";
-                fw,product = "ti-am62x";
-                fw,layout-id = "am62x-sd-ab-v1";
+                fw,hwids = "1010001000110000";
                 fw,version = <2>;
                 fw,rollback-index = <2>;
             };
@@ -196,7 +193,7 @@ unsigned ITS for development is::
 Build and verify it with::
 
     mkimage -f bootloader.its bootloader.itb
-    fw verify tftp bootloader.itb
+    fwctl verify tftp bootloader.itb
 
 Release manifest
 ----------------
@@ -206,8 +203,7 @@ unique components in "fw,components". Each component needs a TFTP file name and
 the lowercase hexadecimal SHA-256 digest of the complete component FIT::
 
     fw,type = "release";
-    fw,product = "ti-am62x";
-    fw,layout-id = "am62x-sd-ab-v1";
+    fw,hwids = "1010001000110000";
     fw,version = <2>;
     fw,rollback-index = <2>;
     fw,components = "bootloader", "kernel", "rootfs";
@@ -243,10 +239,10 @@ Examples
 
 Load and update directly from TFTP::
 
-    fw update tftp bootloader.itb
-    fw update tftp kernel.itb
-    fw update tftp rootfs.itb
-    fw update tftp release.itb all
+    fwctl update tftp bootloader.itb
+    fwctl update tftp kernel.itb
+    fwctl update tftp rootfs.itb
+    fwctl update tftp release.itb all
 
 The AM62x default environment provides shortcuts for these commands::
 
@@ -258,13 +254,13 @@ The AM62x default environment provides shortcuts for these commands::
 Use an image already in memory::
 
     tftp ${loadaddr} kernel.itb
-    fw verify addr ${loadaddr} ${filesize}
-    fw update addr ${loadaddr} ${filesize}
+    fwctl verify addr ${loadaddr} ${filesize}
+    fwctl update addr ${loadaddr} ${filesize}
 
 Initialize a factory image and select boot offsets::
 
-    fw init a
-    fw select
+    fwctl init a
+    fwctl select
 
 AM62x network boot switches
 ---------------------------
@@ -302,7 +298,7 @@ support built in.
 
 A failed kernel/DTB download stops the boot sequence without falling back to
 stale RAM or the eMMC kernel. Either mixed mode still needs valid A/B selection
-for its local component. Full TFTP + NFS bypasses ``fw select`` in U-Boot proper;
+for its local component. Full TFTP + NFS bypasses ``fwctl select`` in U-Boot proper;
 it does not change the ROM/SPL boot source or SPL's existing slot selection.
 
 Network modes do not apply pending ``fw_confirm`` values, start the product
@@ -343,24 +339,24 @@ from that same deployment.
 
 The optional "auto-init" layout property initializes metadata only when both
 copies contain erased bytes. Corrupt non-empty metadata still requires an
-explicit factory recovery with "fw init".
+explicit factory recovery with "fwctl init".
 
 Verified kernel loading and HTTP recovery
 ----------------------------------------
 
-``fw load-kernel <address>`` reads the selected kernel FIT with a bounded size,
+``fwctl load-kernel <address>`` reads the selected kernel FIT with a bounded size,
 verifies its format, hashes and configured signature policy, and checks the
 metadata version when known. It supports the firmware manager's MMC and SPI-NOR
 storage backends. AM625 normal eMMC boot now uses this command.
 
-``fw recover-kernel`` requires CONFIG_WGET and known selected-kernel metadata.
+``fwctl recover-kernel`` requires CONFIG_WGET and known selected-kernel metadata.
 It first checks the stored kernel; healthy kernels are left untouched. Otherwise
 it requests the exact version and firmware content ID from the configured OTA server::
 
     setenv ota_serverip 192.168.10.246
     setenv ota_serverport 8090
-    fw select
-    fw recover-kernel
+    fwctl select
+    fwctl recover-kernel
 
 The endpoint is
 ``/recovery/<product>/<layout>/kernel/<version>/<firmware-id>/kernel.itb``.
@@ -388,8 +384,23 @@ Independent rootfs recovery initramfs
 
 AM625 environment schema 7 boots a kernel FIT containing a ``recovery`` ramdisk.
 Kernel FIT verification covers kernel, FDT and a referenced ramdisk.
-``fw verity-args <FIT address> <rootfs device>`` validates the bound verity
+``fwctl verity-args <FIT address> <rootfs device>`` validates the bound verity
 parameters and requires a ramdisk, then selects ``rdinit=/init``. The C PID 1
 performs full payload verification, creates dm-verity and switches root.
 Invalid metadata or a missing recovery ramdisk stops the production boot path.
 The explicit NFS debug path uses ``bootm <address> -`` to omit the ramdisk.
+
+Single-component transactions
+-----------------------------
+
+Before writing an inactive component, ``fwctl update`` durably saves a WRITING
+transaction with no pending or one-shot boot selection. Interrupted writes
+therefore retain the confirmed deployment. A successful write and readback
+changes the candidate to READY; boot and health confirmation are still required.
+Sequential kernel/rootfs updates preserve earlier staged components; repeated
+updates always write the slot opposite the confirmed source.
+
+The AM62x environment schema is 8. Migration replaces owned boot scripts and
+``upa/upb/upk/upr`` with the ``fwctl`` spelling, preserving device HWID and user
+network settings. Factory metadata initialization is not an ordinary recovery
+procedure.

@@ -277,6 +277,77 @@ static int lib_test_fw_release_restarts_pending(struct unit_test_state *uts)
 
 LIB_TEST(lib_test_fw_release_restarts_pending, 0);
 
+static int lib_test_fw_component_write_interruption(struct unit_test_state *uts)
+{
+	struct fw_metadata_store store;
+	struct fw_test_store data;
+	struct fw_metadata metadata, restored;
+	u8 target, selected;
+
+	fw_test_setup(&data, &store);
+	fw_metadata_init(&metadata, 0);
+	ut_assertok(fw_metadata_save(&store, &metadata));
+	ut_assertok(fw_metadata_begin_component(&metadata, FW_COMPONENT_KERNEL,
+					      &target));
+	ut_assertok(fw_metadata_save(&store, &metadata));
+	/* Reset during the raw write: only the confirmed source is selected. */
+	ut_assertok(fw_metadata_load(&store, &restored));
+	ut_asserteq(FW_STATE_WRITING, restored.deployment[target].state);
+	ut_asserteq(FW_SLOT_NONE, restored.pending_deployment);
+	ut_assert(fw_metadata_select(&restored, &selected) >= 0);
+	ut_asserteq(0, selected);
+	ut_asserteq(0, restored.deployment[target].tries_remaining);
+	ut_asserteq(-EINVAL, fw_metadata_mark_good(&restored, target));
+	restored.boot_once_deployment = target;
+	ut_asserteq(-EINVAL, fw_metadata_select(&restored, &selected));
+	restored.selected_deployment = target;
+	ut_asserteq(-ENOENT, fw_metadata_get_selected(&restored, &selected));
+	ut_assertok(fw_metadata_stage_component(&metadata, target,
+			FW_COMPONENT_KERNEL, 1, 9, 9, 0));
+	ut_assertok(fw_metadata_commit_release(&metadata, target, 3));
+	ut_assertok(fw_metadata_save(&store, &metadata));
+	/* A following rootfs update retains the already staged kernel. */
+	ut_assertok(fw_metadata_begin_component(&metadata, FW_COMPONENT_ROOTFS,
+					      &target));
+	ut_asserteq(1, metadata.deployment[target].component[FW_COMPONENT_KERNEL].slot);
+	ut_asserteq(9, metadata.deployment[target].component[FW_COMPONENT_KERNEL].version);
+	ut_assertok(fw_metadata_save(&store, &metadata));
+	ut_assertok(fw_metadata_load(&store, &restored));
+	ut_assert(fw_metadata_select(&restored, &selected) >= 0);
+	ut_asserteq(0, selected);
+	ut_assertok(fw_metadata_stage_component(&metadata, target,
+			FW_COMPONENT_ROOTFS, 1, 9, 9, 0));
+	ut_assertok(fw_metadata_commit_release(&metadata, target, 3));
+	ut_assertok(fw_metadata_select(&metadata, &selected) - 1);
+	ut_asserteq(target, selected);
+	return 0;
+}
+
+LIB_TEST(lib_test_fw_component_write_interruption, 0);
+
+static int lib_test_fw_component_identity(struct unit_test_state *uts)
+{
+	struct fw_metadata metadata;
+	u8 target;
+
+	fw_metadata_init(&metadata, 0);
+	metadata.deployment[0].identity.valid = 1;
+	strcpy(metadata.deployment[0].identity.tag, "v0.0.1");
+	ut_assertok(fw_metadata_begin_component(&metadata,
+			FW_COMPONENT_BOOTLOADER, &target));
+	ut_asserteq(1, metadata.deployment[target].identity.valid);
+	ut_assertok(fw_metadata_stage_component(&metadata, target,
+			FW_COMPONENT_BOOTLOADER, 1, 1, 1, 0));
+	ut_assertok(fw_metadata_commit_release(&metadata, target, 3));
+	ut_assertok(fw_metadata_begin_component(&metadata, FW_COMPONENT_KERNEL,
+					      &target));
+	ut_asserteq(0, metadata.deployment[target].identity.valid);
+	ut_asserteq(1, metadata.deployment[target].component[FW_COMPONENT_BOOTLOADER].slot);
+	return 0;
+}
+
+LIB_TEST(lib_test_fw_component_identity, 0);
+
 static int lib_test_fw_release_accepts_older_tag(struct unit_test_state *uts)
 {
 	struct fw_metadata metadata;
