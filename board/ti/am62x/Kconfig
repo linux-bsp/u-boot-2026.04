@@ -14,6 +14,24 @@ config SYS_VENDOR
 config SYS_CONFIG_NAME
        default "am62x_evm"
 
+config AM62X_BOOT_TFTP_KERNEL
+	bool "Load kernel and device tree from TFTP by default"
+	depends on CMD_FW && CMD_TFTPBOOT && CMD_BOOTI
+	help
+	  Set tftp_kernel=1 in am62x_raw_ab.env. NFS root is independent.
+	  A change of compiled boot profile updates both switches in saved
+	  environments, preserving HWID, MAC, IP addresses and server paths.
+	  Later manual switch changes are preserved within the same profile.
+
+config AM62X_BOOT_NFS_ROOT
+	bool "Mount root filesystem from NFS by default"
+	depends on CMD_FW
+	help
+	  Set nfs_root=1 in am62x_raw_ab.env. The kernel must have built-in
+	  NFS root, IP autoconfiguration and network/storage drivers. With
+	  TFTP disabled, use the local A/B kernel FIT without its initramfs.
+	  Both switches disabled retain the verified local A/B boot path.
+
 source "board/ti/common/Kconfig"
 
 endif

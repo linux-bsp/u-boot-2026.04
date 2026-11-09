@@ -309,7 +309,10 @@ static void migrate_fw_environment(void)
 		"netdev",
 	};
 	char default_version[16];
+	char default_profile[16];
 	const char *current_version;
+	const char *current_profile;
+	bool schema_changed, profile_changed;
 	int ret;
 
 	ret = env_get_default_into("fw_env_version", default_version,
@@ -320,15 +323,26 @@ static void migrate_fw_environment(void)
 	}
 
 	current_version = env_get("fw_env_version");
-	if (current_version && !strcmp(current_version, default_version))
+	ret = env_get_default_into("fw_boot_profile", default_profile,
+				   sizeof(default_profile));
+	if (ret < 0) {
+		printf("FW env: default boot profile is missing\n");
+		return;
+	}
+	current_profile = env_get("fw_boot_profile");
+	schema_changed = !current_version || strcmp(current_version, default_version);
+	profile_changed = !current_profile || strcmp(current_profile, default_profile);
+	if (!schema_changed && !profile_changed)
 		return;
 
-	printf("FW env: migrating schema %s -> %s\n",
-	       current_version ? current_version : "<unset>", default_version);
-	if (!env_set_default_vars(ARRAY_SIZE(fw_vars),
-				  (char * const *)fw_vars, 0)) {
-		printf("FW env: failed to import owned default variables\n");
-		return;
+	if (schema_changed) {
+		printf("FW env: migrating schema %s -> %s\n",
+		       current_version ? current_version : "<unset>", default_version);
+		if (!env_set_default_vars(ARRAY_SIZE(fw_vars),
+					  (char * const *)fw_vars, 0)) {
+			printf("FW env: failed to import owned default variables\n");
+			return;
+		}
 	}
 
 	/* Preserve user network settings, adding only missing defaults. */
@@ -336,6 +350,23 @@ static void migrate_fw_environment(void)
 		if (!env_get(net_vars[i]) &&
 		    !env_set_default_vars(1, (char * const *)&net_vars[i], 0)) {
 			printf("FW env: failed to import %s\n", net_vars[i]);
+			return;
+		}
+	}
+
+	/* Compile-time profile changes take effect even with an existing env.
+	 * Do not reset the whole environment: it contains provisioned HWID/MAC
+	 * and site-specific network settings. Manual overrides survive reboot
+	 * when the compiled profile itself has not changed.
+	 */
+	if (profile_changed) {
+		static const char * const switches[] = { "tftp_kernel", "nfs_root" };
+
+		printf("FW env: applying compiled boot profile %s\n", default_profile);
+		if (!env_set_default_vars(ARRAY_SIZE(switches),
+					  (char * const *)switches, 0) ||
+		    env_set("fw_boot_profile", default_profile)) {
+			printf("FW env: failed to update boot profile\n");
 			return;
 		}
 	}
