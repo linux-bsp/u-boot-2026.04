@@ -274,7 +274,9 @@ Initialize a factory image and select boot offsets::
 AM62x network boot switches
 ---------------------------
 
-The AM62x environment provides two independent switches. Both default to zero:
+The AM62x BSP environment provides two independent switches. Their defaults
+come from ``CONFIG_AM62X_BOOT_TFTP_KERNEL`` and ``CONFIG_AM62X_BOOT_NFS_ROOT``;
+the base board configuration disables both:
 
 ================= ============ ==================== ========================
 ``tftp_kernel``   ``nfs_root`` Kernel source        Root filesystem
@@ -293,14 +295,16 @@ For a temporary TFTP + NFS boot, interrupt autoboot and run::
     setenv netmask 255.255.255.0
     setenv tftp_kernel 1
     setenv nfs_root 1
-    setenv nfsroot /srv/nfs/sadboard-am625
+    setenv nfsroot /srv/nfs/am625
+    setenv net_hostname am625
     run bootcmd
 
 The server must provide an uncompressed ``Image`` and
 ``k3-am625-alientek.dtb`` through TFTP, and export the unpacked root filesystem
 through NFS. ``tftp_kernel_file`` and ``tftp_fdt_file`` override the TFTP paths.
 ``nfsroot`` is the server-side export path, ``nfsopts`` defaults to
-``vers=3,tcp``, and ``netdev`` defaults to Linux interface ``eth0``. TFTP and NFS
+``vers=3,tcp``, and ``netdev`` defaults to Linux interface ``eth0``.
+``net_hostname`` supplies the hostname in the kernel IP configuration. TFTP and NFS
 both use ``serverip``. NFS is mounted by Linux, not by the U-Boot ``nfs`` command.
 The kernel must have its network driver, IP autoconfiguration and NFS-root
 support built in.
@@ -313,6 +317,8 @@ it does not change the ROM/SPL boot source or SPL's existing slot selection.
 Network modes do not apply pending ``fw_confirm`` values, start the product
 watchdog, or pass ``fw.deployment``/``fw.rollback_test`` to Linux. They therefore
 do not automatically confirm a test boot as a successful product deployment.
+The common ``bsp.netboot=1`` kernel parameter selects BSP network readiness
+policy and disables production OTA and slot confirmation in Linux.
 SPL may already have accounted for an A/B attempt before reaching U-Boot.
 Use a fresh boot if the product watchdog was started during an earlier attempt.
 
@@ -320,9 +326,10 @@ Set both switches to ``0`` to restore the original A/B flow. Use ``saveenv``
 only when the selected settings should persist across resets. ``upk``/``upr``
 remain firmware update commands; network boot does not call them.
 
-Environment schema 3 refreshes the boot helper scripts on upgrade and fills
-missing network-switch defaults. Existing IP/MAC settings and custom network
-switches, filenames and export paths are preserved. An already-running old
+Environment schema 10 refreshes the boot helper scripts and imports missing
+network defaults. HWID, IP/MAC settings, filenames and export paths are
+preserved. A changed compiled profile updates the two switches; manual
+switch settings survive within the same compiled profile. An already-running old
 U-Boot does not gain these helpers merely by setting the switches; it needs
 the new U-Boot or the corresponding environment scripts imported first.
 

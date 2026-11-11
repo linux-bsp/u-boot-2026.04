@@ -307,6 +307,7 @@ static void migrate_fw_environment(void)
 		"nfsroot",
 		"nfsopts",
 		"netdev",
+		"net_hostname",
 	};
 	char default_version[16];
 	char default_profile[16];
